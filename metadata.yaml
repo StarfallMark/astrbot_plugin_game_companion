@@ -4,6 +4,7 @@ author: AstrBot Community
 version: 0.1.0
 description: 让 Bot 与用户通过安全的可视化房间自然地一起玩游戏，并延续现有陪伴人格与长期记忆。
 desc: 自然语言创建游戏房间，首个游戏为支持三档人格化棋力的五子棋。
+repo: https://github.com/StarfallMark/astrbot_plugin_game_companion
 category: 娱乐
 tags:
   - 游戏

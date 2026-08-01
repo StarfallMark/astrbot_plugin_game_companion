@@ -23,6 +23,9 @@ def test_metadata_registers_default_management_page() -> None:
     metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
 
     assert metadata["astrbot_version"] == ">=4.26.8"
+    assert metadata["repo"] == (
+        "https://github.com/StarfallMark/astrbot_plugin_game_companion"
+    )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
 
 
