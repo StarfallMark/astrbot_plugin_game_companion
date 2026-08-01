@@ -1,0 +1,114 @@
+{
+  "server": {
+    "description": "游戏页面服务",
+    "type": "object",
+    "hint": "服务按需启动，默认只监听本机。不会自动开放防火墙或暴露公网 IP。",
+    "items": {
+      "enabled": {
+        "description": "启用游戏页面服务",
+        "type": "bool",
+        "default": true
+      },
+      "host": {
+        "description": "监听地址",
+        "type": "string",
+        "default": "127.0.0.1",
+        "hint": "推荐保持 127.0.0.1，由 Quick Tunnel 或 HTTPS 反向代理提供外部访问。"
+      },
+      "port": {
+        "description": "首选监听端口",
+        "type": "int",
+        "default": 6331,
+        "hint": "冲突时只尝试后续十个端口，不会占用或关闭已有服务。"
+      },
+      "public_base_url": {
+        "description": "固定 HTTPS 外部地址",
+        "type": "string",
+        "default": "",
+        "hint": "例如 https://bot.example.com/games。留空时可按需启动 Cloudflare Quick Tunnel。"
+      },
+      "auto_quick_tunnel": {
+        "description": "创建房间时自动启动临时公网访问",
+        "type": "bool",
+        "default": true,
+        "hint": "需要预先安装 cloudflared；插件不会自行下载。"
+      }
+    }
+  },
+  "rooms": {
+    "description": "房间权限与并行数量",
+    "type": "object",
+    "items": {
+      "enable_group_rooms": {
+        "description": "允许群聊创建房间",
+        "type": "bool",
+        "default": true
+      },
+      "enable_private_rooms": {
+        "description": "允许私聊创建房间",
+        "type": "bool",
+        "default": true
+      },
+      "allow_non_admin_group_creation": {
+        "description": "允许非游戏管理员在群聊创建房间",
+        "type": "bool",
+        "default": false
+      },
+      "game_admin_qq_ids": {
+        "description": "游戏管理员 QQ 号",
+        "type": "text",
+        "default": "",
+        "hint": "每行一个或使用逗号分隔。不继承 AstrBot 管理员。"
+      },
+      "max_group_rooms": {
+        "description": "全部群聊合计最大房间数",
+        "type": "int",
+        "default": 1,
+        "hint": "0 表示无限制；创建后即占用名额。"
+      },
+      "max_private_rooms": {
+        "description": "全部私聊合计最大房间数",
+        "type": "int",
+        "default": 1,
+        "hint": "0 表示无限制；创建后即占用名额。"
+      },
+      "empty_player_timeout_seconds": {
+        "description": "玩家席无人自动销毁秒数",
+        "type": "int",
+        "default": 60,
+        "hint": "0 表示关闭该项自动销毁。"
+      },
+      "idle_timeout_seconds": {
+        "description": "房间无有效操作自动销毁秒数",
+        "type": "int",
+        "default": 300,
+        "hint": "0 表示关闭该项自动销毁；页面刷新和心跳不算有效操作。"
+      }
+    }
+  },
+  "game": {
+    "description": "局内节奏",
+    "type": "object",
+    "items": {
+      "commentary_cooldown_seconds": {
+        "description": "战术节点人格回复冷却秒数",
+        "type": "int",
+        "default": 45,
+        "hint": "普通落子不触发模型，只在明显威胁等关键节点表达。"
+      }
+    }
+  },
+  "memory": {
+    "description": "陪伴记忆",
+    "type": "object",
+    "items": {
+      "record_shared_experience": {
+        "description": "记录确认身份后的完整游戏经历",
+        "type": "bool",
+        "default": true,
+        "hint": "只在房间销毁时写一条摘要；不会保存逐步棋谱。"
+      }
+    }
+  }
+}
+

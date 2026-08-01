@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#f2f4f1" />
+  <title>游戏伴侣 · 五子棋</title>
+  <link rel="stylesheet" href="../../assets/app.css" />
+</head>
+<body>
+  <main class="game-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"><i data-lucide="grid-3x3"></i></span>
+        <div>
+          <span class="eyebrow">游戏伴侣</span>
+          <h1>五子棋</h1>
+        </div>
+      </div>
+      <div class="room-state">
+        <span id="connectionDot" class="connection-dot"></span>
+        <span id="roomStatus">正在进入房间</span>
+        <code id="roomId"></code>
+      </div>
+    </header>
+
+    <section class="game-layout">
+      <div class="board-stage">
+        <canvas id="board" width="760" height="760" aria-label="十五乘十五五子棋棋盘"></canvas>
+        <div id="boardOverlay" class="board-overlay" hidden>
+          <strong id="overlayTitle"></strong>
+          <span id="overlayText"></span>
+        </div>
+      </div>
+
+      <aside class="game-panel">
+        <section class="turn-panel">
+          <div class="turn-stone" id="turnStone"></div>
+          <div>
+            <span class="label">当前回合</span>
+            <strong id="turnLabel">等待开局</strong>
+          </div>
+          <span class="difficulty" id="difficulty">普通</span>
+        </section>
+
+        <section class="seat-panel">
+          <div class="section-head">
+            <div>
+              <span class="label">我的身份</span>
+              <strong id="visitorLabel">访客</strong>
+            </div>
+            <span id="seatBadge" class="seat-badge">观众席</span>
+          </div>
+          <div class="side-choice" id="sideChoice" role="group" aria-label="选择先后手">
+            <button type="button" data-side="human_black" class="is-active">我先手</button>
+            <button type="button" data-side="bot_black">Bot先手</button>
+            <button type="button" data-side="random">随机</button>
+          </div>
+          <button id="seatAction" class="primary-action" type="button" disabled>
+            <i data-lucide="log-in"></i><span>加入对局</span>
+          </button>
+          <p id="seatNote" class="seat-note"></p>
+        </section>
+
+        <section class="score-panel" aria-label="房间比分">
+          <div><span>玩家</span><strong id="humanScore">0</strong></div>
+          <div><span>平局</span><strong id="drawScore">0</strong></div>
+          <div><span>Bot</span><strong id="botScore">0</strong></div>
+        </section>
+
+        <section class="people-panel">
+          <div class="section-head">
+            <div>
+              <span class="label">房间成员</span>
+              <strong id="peopleCount">0 人</strong>
+            </div>
+            <i data-lucide="users"></i>
+          </div>
+          <div id="peopleList" class="people-list"></div>
+        </section>
+
+        <section class="messages-panel">
+          <div class="section-head">
+            <span class="label">局内回应</span>
+            <i data-lucide="message-circle"></i>
+          </div>
+          <div id="messages" class="messages" aria-live="polite"></div>
+        </section>
+      </aside>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden role="status"></div>
+  <script src="../../assets/lucide.min.js"></script>
+  <script src="../../assets/app.js"></script>
+</body>
+</html>
+

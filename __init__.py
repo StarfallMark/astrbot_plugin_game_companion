@@ -1,0 +1,1 @@
+"""AstrBot Game Companion plugin."""

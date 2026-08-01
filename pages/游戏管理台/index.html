@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>游戏管理台</title>
+  <link rel="stylesheet" href="./manager.css" />
+</head>
+<body>
+  <main class="manager-shell">
+    <header class="manager-header">
+      <div class="title-group">
+        <span class="title-icon"><i data-lucide="gamepad-2"></i></span>
+        <div>
+          <span class="eyebrow">游戏伴侣</span>
+          <h1>游戏管理台</h1>
+        </div>
+      </div>
+      <div class="service-actions">
+        <span id="serviceBadge" class="service-badge">检查中</span>
+        <button id="tunnelAction" class="secondary-button" type="button" disabled>
+          <i data-lucide="radio-tower"></i><span>临时公网访问</span>
+        </button>
+        <button id="refreshAction" class="icon-button" type="button" title="刷新" aria-label="刷新">
+          <i data-lucide="refresh-cw"></i>
+        </button>
+      </div>
+    </header>
+
+    <section class="metrics" aria-label="房间概况">
+      <div><span>活动房间</span><strong id="roomCount">0</strong></div>
+      <div><span>群聊房间</span><strong id="groupCount">0</strong><small id="groupLimit">上限 1</small></div>
+      <div><span>私聊房间</span><strong id="privateCount">0</strong><small id="privateLimit">上限 1</small></div>
+      <div><span>在线访客</span><strong id="visitorCount">0</strong></div>
+    </section>
+
+    <section class="rooms-section">
+      <header class="section-header">
+        <div>
+          <h2>全部房间</h2>
+          <span id="lastUpdated">尚未读取</span>
+        </div>
+        <span id="tunnelUrl" class="tunnel-url"></span>
+      </header>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>房间</th>
+              <th>来源与创建者</th>
+              <th>房内成员</th>
+              <th>玩家席</th>
+              <th>状态</th>
+              <th class="actions-column">操作</th>
+            </tr>
+          </thead>
+          <tbody id="roomsBody"></tbody>
+        </table>
+        <div id="emptyState" class="empty-state" hidden>
+          <i data-lucide="inbox"></i>
+          <strong>当前没有活动房间</strong>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="assignDialog">
+    <form method="dialog" id="assignForm">
+      <header>
+        <div>
+          <span class="eyebrow">安排玩家</span>
+          <h2 id="assignRoomLabel">房间</h2>
+        </div>
+        <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <input id="assignRoomId" type="hidden" />
+      <label>
+        <span>房间序号</span>
+        <select id="assignVisitor" required></select>
+      </label>
+      <label>
+        <span>玩家 QQ 号</span>
+        <input id="assignQq" type="text" inputmode="numeric" pattern="[0-9]+" autocomplete="off" required />
+      </label>
+      <footer>
+        <button class="secondary-button" value="cancel" type="submit">取消</button>
+        <button id="confirmAssign" class="primary-button" value="default" type="button">
+          <i data-lucide="user-check"></i><span>确认安排</span>
+        </button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden role="status"></div>
+  <script src="./lucide.min.js"></script>
+  <script src="./manager.js"></script>
+</body>
+</html>
+

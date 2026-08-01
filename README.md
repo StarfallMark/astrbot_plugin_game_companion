@@ -1,14 +1,63 @@
-# astrbot-plugin-helloworld
+# 游戏伴侣
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+游戏伴侣让 Bot 与用户通过独立 WebUI 一起玩游戏，同时保留 AstrBot 的正常聊天、人格、生活场景和长期记忆链路。首个游戏为五子棋。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 核心行为
 
-# Supports
+- 用户通过自然语言邀请 Bot 玩五子棋，由 LLM 工具创建房间。
+- 网页只负责棋盘、席位和关键局内回应；普通聊天继续在 QQ 中进行。
+- Bot 根据人格选择简单、普通或困难棋力，玩家不能在网页直接选择难度。
+- 玩家可以选择先后手；Bot 落子有轻微延迟，搜索在线程中执行。
+- 悔棋、暂停、继续、认输、身份确认和抢占纠正必须从原 QQ 会话发起。
+- 普通落子不调用模型，只有开局、明显威胁、胜负和再来一局等关键节点触发人格化表达。
+- 身份确认前不读取该用户的长期记忆或生活场景，也不写入共同经历。
+- 房间结束时仅保存一条摘要，不保存逐步棋谱。
+- AstrBot 或插件重载时销毁所有活动房间，不恢复未完成棋局。
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## 房间权限
+
+插件配置中的游戏管理员与 AstrBot 管理员相互独立。
+
+- 群聊默认只允许游戏管理员创建房间。
+- 管理员创建的房间中，所有访客先进入观众席并获得稳定序号。管理员在“游戏管理台”选择序号并绑定玩家 QQ 后才能开局。
+- 开放普通成员创建群聊房间后，首位申请者可以进入玩家席。创建者可以在原 QQ 会话说明实际序号，由 Bot 工具重置棋局并纠正席位。
+- 私聊房间采用普通房间规则。
+- 管理台展示创建者、访客序号、席位和房间状态，不展示棋盘或棋谱。
+
+## 外部访问
+
+房间服务默认按需监听 `127.0.0.1:6331`。如果端口已被占用，只会尝试后续十个端口，不会关闭或复用其他服务。
+
+推荐二选一：
+
+1. 在 `server.public_base_url` 配置现有 HTTPS 反向代理地址。
+2. 安装 `cloudflared`，保留 `server.auto_quick_tunnel=true`，创建首个房间时按需生成 `trycloudflare.com` 临时 HTTPS 地址。
+
+插件不会自动下载 `cloudflared`、修改防火墙、执行 UPnP 或退回到公开服务器 IP。
+
+反向代理需要将完整 HTTP 路径转发至实际监听端口。固定外部地址必须使用 HTTPS。
+
+## 配置默认值
+
+| 配置 | 默认值 | 说明 |
+|---|---:|---|
+| 允许群聊创建 | 开启 | 总开关关闭后管理员也不能创建 |
+| 允许私聊创建 | 开启 | 私聊总开关 |
+| 非管理员群聊创建 | 关闭 | 开启后普通群成员可创建 |
+| 全部群聊房间上限 | 1 | `0` 为无限制 |
+| 全部私聊房间上限 | 1 | `0` 为无限制 |
+| 玩家席无人超时 | 60 秒 | `0` 关闭该项自动销毁 |
+| 无有效操作超时 | 300 秒 | `0` 关闭该项自动销毁 |
+
+页面刷新、观众进出和状态轮询不算有效操作。
+
+## 开发验证
+
+```bash
+pytest -q
+ruff check .
+node --check web/app.js
+node --check pages/游戏管理台/manager.js
+```
+
+开发目标版本为 AstrBot `4.26.8`，Python `3.12+`。
