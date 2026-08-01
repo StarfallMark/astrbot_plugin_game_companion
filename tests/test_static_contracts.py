@@ -34,3 +34,17 @@ def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
         content = page.read_text(encoding="utf-8")
         assert "https://" not in content
         assert "<script>" not in content
+
+
+def test_player_move_is_rendered_before_waiting_for_bot_response() -> None:
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    optimistic_render = script.index(
+        "pendingMove = { row, column, color: room.game.human_color };"
+    )
+    move_request = script.index(
+        'await request("POST", "move", { visitor_token: visitorToken, row, column })'
+    )
+
+    assert optimistic_render < move_request
+    assert "pendingMove = null;" in script[move_request:]

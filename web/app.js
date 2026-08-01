@@ -13,6 +13,7 @@
   let pollTimer = 0;
   let toastTimer = 0;
   let busy = false;
+  let pendingMove = null;
 
   function icons() {
     if (window.lucide?.createIcons) window.lucide.createIcons();
@@ -193,6 +194,11 @@
       label.textContent = statusLabel(room.status);
       return;
     }
+    if (pendingMove) {
+      label.textContent = "Bot 思考中";
+      stone.classList.add(room.game.human_color === 1 ? "white" : "black");
+      return;
+    }
     const humanTurn = room.game.turn === room.game.human_color;
     label.textContent = room.game.winner
       ? (room.game.winner === room.game.human_color ? "玩家获胜" : "Bot 获胜")
@@ -233,7 +239,20 @@
       context.lineWidth = 1.5;
       context.stroke();
     }));
-    const lastMove = room?.game?.last_move;
+    if (pendingMove && room?.game?.board?.[pendingMove.row]?.[pendingMove.column] === 0) {
+      const x = margin + pendingMove.column * gap;
+      const y = margin + pendingMove.row * gap;
+      context.beginPath();
+      context.arc(x, y, gap * .41, 0, Math.PI * 2);
+      context.fillStyle = pendingMove.color === 1 ? "#242724" : "#f7f8f5";
+      context.fill();
+      context.strokeStyle = pendingMove.color === 1 ? "#121412" : "#9da39e";
+      context.lineWidth = 1.5;
+      context.stroke();
+    }
+    const lastMove = pendingMove
+      ? [pendingMove.row, pendingMove.column]
+      : room?.game?.last_move;
     if (Array.isArray(lastMove)) {
       context.beginPath();
       context.arc(margin + lastMove[1] * gap, margin + lastMove[0] * gap, 5, 0, Math.PI * 2);
@@ -275,15 +294,25 @@
     const column = Math.round((x - margin) / gap);
     const row = Math.round((y - margin) / gap);
     if (row < 0 || row > 14 || column < 0 || column > 14) return;
+    if (room.game.board?.[row]?.[column]) {
+      showToast("这个位置已经有棋子了");
+      return;
+    }
     busy = true;
+    pendingMove = { row, column, color: room.game.human_color };
+    render();
     try {
       const data = await request("POST", "move", { visitor_token: visitorToken, row, column });
+      pendingMove = null;
       room = data.room;
       render();
     } catch (error) {
+      pendingMove = null;
+      try { await loadState(); } catch (_syncError) { /* poll will retry */ }
       showToast(error?.message || "无法落子");
     } finally {
       busy = false;
+      render();
     }
   }
 
