@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from aiohttp.test_utils import TestClient, TestServer
 
 from astrbot_plugin_game_companion.room_manager import RoomManager
 from astrbot_plugin_game_companion.server import GameRoomServer
@@ -84,3 +85,28 @@ def test_security_policy_blocks_external_assets_and_framing() -> None:
     assert "script-src 'self'" in headers["Content-Security-Policy"]
     assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
     assert headers["Referrer-Policy"] == "no-referrer"
+
+
+@pytest.mark.asyncio
+async def test_expired_room_api_returns_structured_close_reason() -> None:
+    server = make_server(0)
+    room = await server.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        difficulty="normal",
+    )
+    access_token = room.access_token
+    await server.manager.destroy(room.room_id, "房间测试关闭")
+
+    app = server._build_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get(f"/api/room/{access_token}/state")
+        payload = await response.json()
+
+    assert response.status == 410
+    assert payload == {"status": "error", "message": "房间测试关闭"}

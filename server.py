@@ -56,20 +56,7 @@ class GameRoomServer:
         missing = [name for name in self.ASSETS if not (self.web_root / name).is_file()]
         if missing:
             raise RuntimeError("游戏页面静态资源不完整：" + "、".join(sorted(missing)))
-        app = web.Application(
-            client_max_size=64 * 1024,
-            middlewares=[self._error_middleware],
-        )
-        app.router.add_get("/", self._serve_index)
-        app.router.add_get("/room/{access_token}", self._serve_index)
-        app.router.add_get("/assets/{name}", self._serve_asset)
-        app.router.add_get("/health", self._health)
-        app.router.add_post("/api/room/{access_token}/join", self._join)
-        app.router.add_get("/api/room/{access_token}/state", self._state)
-        app.router.add_post("/api/room/{access_token}/claim", self._claim)
-        app.router.add_post("/api/room/{access_token}/start", self._start_game)
-        app.router.add_post("/api/room/{access_token}/move", self._move)
-        app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
+        app = self._build_app()
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         last_error: OSError | None = None
@@ -89,6 +76,24 @@ class GameRoomServer:
         raise RuntimeError(
             f"无法监听游戏端口 {self.requested_port}-{min(65535, self.requested_port + 10)}：{last_error}"
         )
+
+    def _build_app(self) -> web.Application:
+        """Build the room application for the real server and isolated tests."""
+        app = web.Application(
+            client_max_size=64 * 1024,
+            middlewares=[self._error_middleware],
+        )
+        app.router.add_get("/", self._serve_index)
+        app.router.add_get("/room/{access_token}", self._serve_index)
+        app.router.add_get("/assets/{name}", self._serve_asset)
+        app.router.add_get("/health", self._health)
+        app.router.add_post("/api/room/{access_token}/join", self._join)
+        app.router.add_get("/api/room/{access_token}/state", self._state)
+        app.router.add_post("/api/room/{access_token}/claim", self._claim)
+        app.router.add_post("/api/room/{access_token}/start", self._start_game)
+        app.router.add_post("/api/room/{access_token}/move", self._move)
+        app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
+        return app
 
     async def stop(self) -> None:
         """Stop only the server instance owned by this plugin."""
@@ -196,7 +201,13 @@ class GameRoomServer:
     ) -> web.StreamResponse:
         try:
             return await handler(request)
-        except web.HTTPException:
+        except web.HTTPException as exc:
+            if request.path.startswith("/api/"):
+                return web.json_response(
+                    {"status": "error", "message": exc.text or exc.reason},
+                    status=exc.status,
+                    headers=self._headers("application/json"),
+                )
             raise
         except PermissionError as exc:
             return web.json_response(
@@ -224,7 +235,8 @@ class GameRoomServer:
             raise web.HTTPNotFound(text="房间链接无效")
         room = self.manager.by_access_token(token)
         if room is None:
-            raise web.HTTPGone(text="房间已结束或链接已经失效")
+            reason = self.manager.closed_reason_by_access_token(token)
+            raise web.HTTPGone(text=reason or "房间已结束或链接已经失效")
         return room
 
     async def _payload(self, request: web.Request) -> dict[str, Any]:

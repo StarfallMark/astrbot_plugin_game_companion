@@ -48,3 +48,10 @@ def test_player_move_is_rendered_before_waiting_for_bot_response() -> None:
 
     assert optimistic_render < move_request
     assert "pendingMove = null;" in script[move_request:]
+
+
+def test_room_expiry_does_not_stop_the_shared_access_channel() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "_stop_idle_access" not in source
+    assert "self._schedule_tunnel_recovery()" in source

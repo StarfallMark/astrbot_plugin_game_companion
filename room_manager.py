@@ -15,6 +15,9 @@ RoomCallback = Callable[[str, GameRoom, dict[str, Any]], Awaitable[None]]
 class RoomManager:
     """Own room quotas, seats, game transitions, and expiry rules."""
 
+    CLOSED_ACCESS_TTL_SECONDS = 15 * 60
+    MAX_CLOSED_ACCESS_RECORDS = 256
+
     def __init__(
         self,
         *,
@@ -31,6 +34,7 @@ class RoomManager:
         self.event_callback = event_callback
         self.rooms: dict[str, GameRoom] = {}
         self._access_index: dict[str, str] = {}
+        self._closed_access: dict[str, tuple[str, float]] = {}
         self._lock = asyncio.Lock()
 
     async def create_room(
@@ -78,6 +82,12 @@ class RoomManager:
         """Resolve an unguessable public room token."""
         room_id = self._access_index.get(str(access_token or ""))
         return self.rooms.get(room_id or "")
+
+    def closed_reason_by_access_token(self, access_token: str) -> str:
+        """Return a short-lived close reason without retaining room data."""
+        self._purge_closed_access()
+        record = self._closed_access.get(str(access_token or ""))
+        return record[0] if record else ""
 
     def for_session(self, session_id: str) -> list[GameRoom]:
         """Return rooms attached to one real AstrBot conversation."""
@@ -330,6 +340,11 @@ class RoomManager:
             self._access_index.pop(room.access_token, None)
             room.status = "closed"
             room.close_reason = str(reason or "房间已结束")[:200]
+            self._closed_access[room.access_token] = (
+                room.close_reason,
+                time.time() + self.CLOSED_ACCESS_TTL_SECONDS,
+            )
+            self._purge_closed_access()
         await self._emit("room_destroyed", room, {"reason": room.close_reason})
         return room
 
@@ -395,6 +410,23 @@ class RoomManager:
     async def _emit(self, event: str, room: GameRoom, payload: dict[str, Any]) -> None:
         if self.event_callback is not None:
             await self.event_callback(event, room, payload)
+
+    def _purge_closed_access(self) -> None:
+        now = time.time()
+        expired = [
+            token
+            for token, (_reason, expires_at) in self._closed_access.items()
+            if expires_at <= now
+        ]
+        for token in expired:
+            self._closed_access.pop(token, None)
+        overflow = len(self._closed_access) - self.MAX_CLOSED_ACCESS_RECORDS
+        if overflow > 0:
+            oldest = sorted(
+                self._closed_access, key=lambda token: self._closed_access[token][1]
+            )[:overflow]
+            for token in oldest:
+                self._closed_access.pop(token, None)
 
     @staticmethod
     def _visitor(room: GameRoom, token: str) -> Visitor:

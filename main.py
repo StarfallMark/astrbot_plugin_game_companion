@@ -92,6 +92,8 @@ class GameCompanionPlugin(Star):
             ],
         )
         self._watchdog_task: asyncio.Task | None = None
+        self._tunnel_recovery_task: asyncio.Task | None = None
+        self._next_tunnel_retry_at = 0.0
         self._background_tasks: set[asyncio.Task] = set()
         self._register_page_api()
 
@@ -146,7 +148,8 @@ class GameCompanionPlugin(Star):
                 "room_url": url,
                 "difficulty": room.difficulty,
                 "admin_room": room.admin_room,
-                "instruction": "最终回复必须完整保留 room_url；说明玩家进入后可选择先后手。",
+                "entry_timeout_seconds": self.manager.empty_player_timeout,
+                "instruction": self._room_link_instruction(),
             },
             ensure_ascii=False,
         )
@@ -398,8 +401,6 @@ class GameCompanionPlugin(Star):
         if event_name == "room_destroyed":
             self._notify_companion_activity(room, "ended")
             await self._record_room_memory(room)
-            if not self.manager.rooms:
-                self._spawn(self._stop_idle_access())
 
     async def _comment(
         self, room: GameRoom, prompt: str, *, history_event: str
@@ -658,15 +659,52 @@ class GameCompanionPlugin(Star):
             while True:
                 await asyncio.sleep(2)
                 await self.manager.sweep_expired()
+                self._schedule_tunnel_recovery()
         except asyncio.CancelledError:
             raise
 
-    async def _stop_idle_access(self) -> None:
-        await asyncio.sleep(0)
-        if self.manager.rooms:
+    def _schedule_tunnel_recovery(self) -> None:
+        if (
+            self.public_base_url
+            or not self.auto_quick_tunnel
+            or not self.manager.rooms
+            or not self.room_server.running
+            or self.quick_tunnel.running
+            or (
+                self._tunnel_recovery_task is not None
+                and not self._tunnel_recovery_task.done()
+            )
+        ):
             return
-        await self.quick_tunnel.stop()
-        await self.room_server.stop()
+        now = asyncio.get_running_loop().time()
+        if now < self._next_tunnel_retry_at:
+            return
+        self._next_tunnel_retry_at = now + 15
+        self._tunnel_recovery_task = self._spawn(self._recover_quick_tunnel())
+
+    async def _recover_quick_tunnel(self) -> None:
+        try:
+            self.quick_tunnel.local_url = self.room_server.local_base_url
+            url = await self.quick_tunnel.start(timeout=40)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 临时访问通道恢复失败，将稍后重试: %s", exc)
+            return
+        finally:
+            self._tunnel_recovery_task = None
+        logger.warning("[GameCompanion] 临时访问通道已恢复，新地址: %s", url)
+        for room in list(self.manager.rooms.values()):
+            await self._send_to_origin(
+                room,
+                "游戏访问通道已恢复，原临时链接已经失效。请使用新链接："
+                f"{self._room_url(room)}",
+            )
+
+    def _room_link_instruction(self) -> str:
+        instruction = "最终回复必须完整保留 room_url；说明玩家进入后可选择先后手。"
+        timeout = self.manager.empty_player_timeout
+        if timeout:
+            instruction += f"明确提醒玩家在 {timeout} 秒内进入玩家席，否则房间会自动销毁。"
+        return instruction
 
     def _register_page_api(self) -> None:
         register_api = getattr(self.context, "register_web_api", None)
@@ -830,7 +868,7 @@ class GameCompanionPlugin(Star):
     def _json_error(message: str) -> str:
         return json.dumps({"ok": False, "error": str(message)}, ensure_ascii=False)
 
-    def _spawn(self, operation: Any) -> None:
+    def _spawn(self, operation: Any) -> asyncio.Task:
         task = asyncio.create_task(operation)
         self._background_tasks.add(task)
 
@@ -844,3 +882,4 @@ class GameCompanionPlugin(Star):
                 logger.debug("[GameCompanion] 后台任务失败: %s", exc)
 
         task.add_done_callback(finish)
+        return task

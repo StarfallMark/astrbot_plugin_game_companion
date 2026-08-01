@@ -85,7 +85,7 @@ class QuickTunnel:
                 if self._process.returncode is not None:
                     break
                 await asyncio.sleep(0.1)
-            if not self.url:
+            if not self.url or self._process.returncode is not None:
                 message = self.error or "cloudflared 未返回临时公网地址"
                 await self.stop()
                 raise RuntimeError(message)
@@ -129,8 +129,11 @@ class QuickTunnel:
                 match = QUICK_TUNNEL_PATTERN.search(line)
                 if match and not self.url:
                     self.url = match.group(0).rstrip("/")
-            if not self.url and lines:
-                self.error = lines[-1][-300:]
+            await process.wait()
+            if self._process is process:
+                self.ready = False
+                detail = lines[-1][-300:] if lines else "未提供错误信息"
+                self.error = f"cloudflared 已退出（代码 {process.returncode}）：{detail}"
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -165,6 +165,26 @@ async def test_empty_room_expires_and_releases_quota() -> None:
 
 
 @pytest.mark.asyncio
+async def test_destroyed_room_keeps_only_a_short_lived_close_reason() -> None:
+    manager = RoomManager()
+    room = await create_room(manager)
+    access_token = room.access_token
+
+    await manager.destroy(room.room_id, "玩家席长时间无人，房间已自动销毁")
+
+    assert manager.by_access_token(access_token) is None
+    assert manager.closed_reason_by_access_token(access_token) == (
+        "玩家席长时间无人，房间已自动销毁"
+    )
+    assert room.room_id not in manager.rooms
+    assert access_token not in manager._access_index
+
+    reason, _expires_at = manager._closed_access[access_token]
+    manager._closed_access[access_token] = (reason, 0.0)
+    assert manager.closed_reason_by_access_token(access_token) == ""
+
+
+@pytest.mark.asyncio
 async def test_admin_snapshot_omits_board_and_access_tokens() -> None:
     manager = RoomManager()
     room = await create_room(manager)
