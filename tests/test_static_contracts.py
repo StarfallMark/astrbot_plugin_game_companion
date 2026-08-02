@@ -24,7 +24,7 @@ def test_config_defaults_match_product_contract() -> None:
 def test_metadata_registers_default_management_page() -> None:
     metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
 
-    assert metadata["astrbot_version"] == ">=4.26.8"
+    assert metadata["astrbot_version"] == ">=4.24.2"
     assert metadata["repo"] == (
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
