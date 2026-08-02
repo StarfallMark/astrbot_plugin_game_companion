@@ -29,7 +29,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.1.1"
+    assert metadata["version"] == "0.1.2"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -49,7 +49,8 @@ def test_player_move_is_rendered_before_waiting_for_bot_response() -> None:
         'pendingMove = { kind: "gomoku", row, column, color: room.game.human_color };'
     )
     move_request = script.index(
-        'await request("POST", "move", { visitor_token: visitorToken, row, column })'
+        'await request("POST", "move", { visitor_token: visitorToken, row, column })',
+        optimistic_render,
     )
 
     assert optimistic_render < move_request
@@ -67,6 +68,24 @@ def test_xiangqi_webui_uses_server_legal_moves_without_game_switcher() -> None:
     assert "切换游戏" not in page
 
 
+def test_tictactoe_webui_has_three_by_three_board_and_optimistic_move() -> None:
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    style = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    assert 'room?.game_type === "tictactoe"' in script
+    assert '[["human_x", "我执 X"], ["human_o", "我执 O"]' in script
+    optimistic = script.index(
+        'pendingMove = { kind: "tictactoe", row, column, mark: room.game.human_mark };'
+    )
+    request = script.index(
+        'await request("POST", "move", { visitor_token: visitorToken, row, column })',
+        optimistic,
+    )
+    assert optimistic < request
+    assert "function drawTicTacToe()" in script
+    assert ".board-stage.tictactoe" in style
+
+
 def test_management_page_can_switch_games_and_install_engine() -> None:
     script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(
         encoding="utf-8"
@@ -76,6 +95,7 @@ def test_management_page_can_switch_games_and_install_engine() -> None:
     )
 
     assert 'action: "switch_game"' in script
+    assert '["tictactoe", "井字棋"]' in script
     assert "confirm_abandon: active" in script
     assert 'endpoint("POST", "xiangqi/install")' in script
     assert "window.confirm" not in script
@@ -96,6 +116,14 @@ def test_natural_language_rematch_is_routed_to_the_existing_room() -> None:
     assert 'elif action == "rematch"' in source
     assert "restart_finished_game" in source
     assert "绝不能 close 后调用创建工具" in source
+
+
+def test_tictactoe_is_available_to_natural_language_tools() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert '"井字棋": "tictactoe"' in source
+    assert '"圈叉棋": "tictactoe"' in source
+    assert '"tictactoe": "井字棋"' in source
 
 
 def test_room_link_is_delivered_outside_model_rewrite_with_fallback() -> None:

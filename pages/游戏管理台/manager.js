@@ -106,7 +106,11 @@
       const gameSelect = document.createElement("select");
       gameSelect.className = "game-select";
       gameSelect.title = "切换游戏";
-      [["gomoku", "五子棋"], ["xiangqi", "中国象棋"]].forEach(([value, label]) => {
+      [
+        ["gomoku", "五子棋"],
+        ["xiangqi", "中国象棋"],
+        ["tictactoe", "井字棋"],
+      ].forEach(([value, label]) => {
         const option = document.createElement("option");
         option.value = value;
         option.textContent = label;

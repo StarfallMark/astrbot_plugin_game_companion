@@ -7,10 +7,11 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .gomoku import Difficulty, GomokuGame
+from .tictactoe import TicTacToeGame
 from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
-GameType = Literal["gomoku", "xiangqi"]
+GameType = Literal["gomoku", "xiangqi", "tictactoe"]
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
 ]
@@ -69,9 +70,13 @@ class GameRoom:
     player_qq: str = ""
     player_identity_confirmed: bool = False
     player_seat_locked: bool = False
-    game: GomokuGame | XiangqiGame | None = None
+    game: GomokuGame | XiangqiGame | TicTacToeGame | None = None
     scores: dict[GameType, GameScore] = field(
-        default_factory=lambda: {"gomoku": GameScore(), "xiangqi": GameScore()}
+        default_factory=lambda: {
+            "gomoku": GameScore(),
+            "xiangqi": GameScore(),
+            "tictactoe": GameScore(),
+        }
     )
     messages: list[dict[str, object]] = field(default_factory=list)
     close_reason: str = ""

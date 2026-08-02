@@ -25,7 +25,7 @@ from .server import GameRoomServer
 from .tunnel import QuickTunnel
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.1.1"
+PLUGIN_VERSION = "0.1.2"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
@@ -137,13 +137,14 @@ class GameCompanionPlugin(Star):
         """仅在用户明确想和 Bot 玩游戏时创建可视化游戏房间。
 
         棋力必须由你结合当前人格、关系和用户请求自行决定，不能把棋力选择交给网页用户。
-        支持 gomoku（五子棋）和 xiangqi（中国象棋）。不要因为普通聊天中偶然提到游戏名称就调用本工具。
+        支持 gomoku（五子棋）、xiangqi（中国象棋）和 tictactoe（井字棋）。
+        不要因为普通聊天中偶然提到游戏名称就调用本工具。
         当前 QQ 会话已有房间时绝不能先关闭再创建；用户说“再来一局”必须调用
         game_companion_control_room 的 rematch 动作，在原房间直接开始下一局。
         若已有另一种游戏正在进行，必须先得到用户明确同意放弃当前局，再传 confirm_abandon=true。
 
         Args:
-            game_type(string): 游戏类型，只能是 gomoku 或 xiangqi。
+            game_type(string): 游戏类型，只能是 gomoku、xiangqi 或 tictactoe。
             difficulty(string): 你决定使用的棋力，只能是 easy、normal、hard。
             confirm_abandon(boolean): 切换游戏且当前局未结束时，用户是否已明确同意放弃本局。
         """
@@ -206,7 +207,7 @@ class GameCompanionPlugin(Star):
             visitor_number(number): correct_player 时创建者声明的浏览器序号。
             allow(boolean): undo 时你是否同意悔棋。
             difficulty(string): rematch 时你根据人格决定的新棋力，只能是 easy、normal、hard。
-            game_type(string): switch_game 时切换到 gomoku 或 xiangqi。
+            game_type(string): switch_game 时切换到 gomoku、xiangqi 或 tictactoe。
             confirm_abandon(boolean): 当前局未结束时，用户是否已明确同意放弃本局。
         """
         action = str(kwargs.get("action") or "status").strip().lower()
@@ -497,12 +498,19 @@ class GameCompanionPlugin(Star):
                     if payload.get("actor") == "human"
                     else room.game.bot_color
                 )
+            elif room.game_type == "tictactoe":
+                side = (
+                    room.game.human_mark
+                    if payload.get("actor") == "human"
+                    else room.game.bot_mark
+                )
             else:
                 side = None
             tactical = room.game.tactical_state(side)
             tactical_prompt = {
                 "four": "棋盘刚出现明显的四子威胁",
                 "major_capture": "棋盘上刚发生了一次重要吃子",
+                "fork": "井字棋盘面刚出现了双重威胁",
             }.get(tactical)
             if tactical_prompt and (
                 time.time() - room.last_commentary_at >= self.commentary_cooldown
@@ -1081,14 +1089,23 @@ class GameCompanionPlugin(Star):
             "xiangqi": "xiangqi",
             "象棋": "xiangqi",
             "中国象棋": "xiangqi",
+            "tictactoe": "tictactoe",
+            "tic-tac-toe": "tictactoe",
+            "tic_tac_toe": "tictactoe",
+            "井字棋": "tictactoe",
+            "圈叉棋": "tictactoe",
         }
         if normalized not in aliases:
-            raise ValueError("目前只支持五子棋和中国象棋")
+            raise ValueError("目前只支持五子棋、中国象棋和井字棋")
         return aliases[normalized]  # type: ignore[return-value]
 
     @staticmethod
     def _game_label(game_type: GameType) -> str:
-        return {"gomoku": "五子棋", "xiangqi": "中国象棋"}[game_type]
+        return {
+            "gomoku": "五子棋",
+            "xiangqi": "中国象棋",
+            "tictactoe": "井字棋",
+        }[game_type]
 
     @staticmethod
     def _value_bool(value: Any) -> bool:

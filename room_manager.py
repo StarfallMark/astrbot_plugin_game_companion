@@ -9,6 +9,9 @@ from typing import Any
 from .gomoku import BLACK, WHITE, Difficulty, GomokuGame
 from .models import GameRoom, GameType, RoomSource, Visitor
 from .pikafish import PikafishService
+from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
+from .tictactoe import X as TICTACTOE_X
+from .tictactoe import TicTacToeGame
 from .xiangqi import BLACK as XIANGQI_BLACK
 from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
@@ -229,7 +232,7 @@ class RoomManager:
                     difficulty=room.difficulty,
                 )
                 side_label = "红" if human_side == XIANGQI_RED else "黑"
-            else:
+            elif room.game_type == "gomoku":
                 normalized_side = str(side or "human_black").strip().lower()
                 if normalized_side not in {"human_black", "bot_black", "random"}:
                     normalized_side = "human_black"
@@ -240,6 +243,21 @@ class RoomManager:
                     human_color=human_color, difficulty=room.difficulty
                 )
                 side_label = "黑" if human_color == BLACK else "白"
+            else:
+                normalized_side = str(side or "human_x").strip().lower()
+                if normalized_side not in {"human_x", "human_o", "random"}:
+                    normalized_side = "human_x"
+                if normalized_side == "random":
+                    normalized_side = secrets.choice(("human_x", "human_o"))
+                human_mark = (
+                    TICTACTOE_X
+                    if normalized_side == "human_x"
+                    else TICTACTOE_NOUGHT
+                )
+                room.game = TicTacToeGame(
+                    human_mark=human_mark, difficulty=room.difficulty
+                )
+                side_label = "X" if human_mark == TICTACTOE_X else "O"
             room.status = "active"
             room.touch()
             room.add_message(
@@ -277,8 +295,10 @@ class RoomManager:
                     int(to_row),
                     int(to_column),
                 )
-            else:
+            elif isinstance(room.game, GomokuGame):
                 room.game.place(int(row), int(column), room.game.human_color)
+            else:
+                room.game.place(int(row), int(column), room.game.human_mark)
             room.touch()
             finished = room.game.finished
         await self._emit("board_changed", room, {"actor": "human"})
@@ -343,12 +363,18 @@ class RoomManager:
                     difficulty=difficulty,
                 )
                 side_label = "红" if human_side == XIANGQI_RED else "黑"
-            else:
+            elif isinstance(room.game, GomokuGame):
                 human_color = room.game.human_color
                 room.game = GomokuGame(
                     human_color=human_color, difficulty=difficulty
                 )
                 side_label = "黑" if human_color == BLACK else "白"
+            else:
+                human_mark = room.game.human_mark
+                room.game = TicTacToeGame(
+                    human_mark=human_mark, difficulty=difficulty
+                )
+                side_label = "X" if human_mark == TICTACTOE_X else "O"
             room.status = "active"
             room.touch()
             room.add_message(
@@ -379,8 +405,10 @@ class RoomManager:
                 raise ValueError("当前没有正在进行的对局")
             if isinstance(room.game, XiangqiGame):
                 room.game.winner = room.game.bot_side
-            else:
+            elif isinstance(room.game, GomokuGame):
                 room.game.winner = room.game.bot_color
+            else:
+                room.game.winner = room.game.bot_mark
             room.touch()
         await self._finish_game(room)
 
@@ -444,7 +472,7 @@ class RoomManager:
         force: bool = False,
     ) -> bool:
         """Switch one room's game while preserving access, seats, and scores."""
-        if game_type not in {"gomoku", "xiangqi"}:
+        if game_type not in {"gomoku", "xiangqi", "tictactoe"}:
             raise ValueError("不支持的游戏类型")
         if game_type == "xiangqi":
             await self._require_xiangqi_engine().ensure_ready()
@@ -545,9 +573,12 @@ class RoomManager:
                         "象棋引擎暂时不可用，对局已暂停。恢复引擎后可在 QQ 或管理台继续。",
                     )
                     raise
-            else:
+            elif isinstance(game, GomokuGame):
                 move = await asyncio.to_thread(game.choose_bot_move)
                 game.place(move[0], move[1], game.bot_color)
+            else:
+                move = game.choose_bot_move()
+                game.place(move[0], move[1], game.bot_mark)
             finished = game.finished
         await self._emit("board_changed", room, {"actor": "bot"})
         if finished:
@@ -622,17 +653,29 @@ class RoomManager:
         return bool(room.game and self._game_is_bot_turn(room.game))
 
     @staticmethod
-    def _game_is_bot_turn(game: GomokuGame | XiangqiGame) -> bool:
+    def _game_is_bot_turn(
+        game: GomokuGame | XiangqiGame | TicTacToeGame,
+    ) -> bool:
         if isinstance(game, XiangqiGame):
             return game.turn == game.bot_side
-        return game.turn == game.bot_color
+        if isinstance(game, GomokuGame):
+            return game.turn == game.bot_color
+        return game.turn == game.bot_mark
 
     @staticmethod
-    def _game_human_won(game: GomokuGame | XiangqiGame) -> bool:
+    def _game_human_won(
+        game: GomokuGame | XiangqiGame | TicTacToeGame,
+    ) -> bool:
         if isinstance(game, XiangqiGame):
             return game.winner == game.human_side
-        return game.winner == game.human_color
+        if isinstance(game, GomokuGame):
+            return game.winner == game.human_color
+        return game.winner == game.human_mark
 
     @staticmethod
     def _game_label(game_type: GameType) -> str:
-        return {"gomoku": "五子棋", "xiangqi": "象棋"}[game_type]
+        return {
+            "gomoku": "五子棋",
+            "xiangqi": "象棋",
+            "tictactoe": "井字棋",
+        }[game_type]

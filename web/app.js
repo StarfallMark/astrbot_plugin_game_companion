@@ -119,23 +119,40 @@
   }
 
   function gameLabel() {
-    return room?.game_type === "xiangqi" ? "中国象棋" : "五子棋";
+    return {
+      gomoku: "五子棋",
+      xiangqi: "中国象棋",
+      tictactoe: "井字棋",
+    }[room?.game_type] || "棋类游戏";
   }
 
   function syncGameUi() {
     if (!room) return;
     const xiangqi = room.game_type === "xiangqi";
+    const tictactoe = room.game_type === "tictactoe";
     document.title = `游戏伴侣 · ${gameLabel()}`;
     document.getElementById("gameTitle").textContent = gameLabel();
-    document.getElementById("brandIcon").setAttribute("data-lucide", xiangqi ? "circle-dot" : "grid-3x3");
+    document.getElementById("brandIcon").setAttribute(
+      "data-lucide",
+      xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3"),
+    );
     boardStage.classList.toggle("xiangqi", xiangqi);
+    boardStage.classList.toggle("tictactoe", tictactoe);
     board.width = xiangqi ? 720 : 760;
     board.height = xiangqi ? 800 : 760;
-    board.setAttribute("aria-label", xiangqi ? "九乘十中国象棋棋盘" : "十五乘十五五子棋棋盘");
+    board.setAttribute(
+      "aria-label",
+      xiangqi
+        ? "九乘十中国象棋棋盘"
+        : (tictactoe ? "三乘三井字棋棋盘" : "十五乘十五五子棋棋盘"),
+    );
     const buttons = Array.from(document.querySelectorAll("[data-side]"));
-    const values = xiangqi
-      ? [["human_red", "我执红"], ["human_black", "我执黑"], ["random", "随机"]]
-      : [["human_black", "我先手"], ["bot_black", "Bot先手"], ["random", "随机"]];
+    let values = [["human_black", "我先手"], ["bot_black", "Bot先手"], ["random", "随机"]];
+    if (xiangqi) {
+      values = [["human_red", "我执红"], ["human_black", "我执黑"], ["random", "随机"]];
+    } else if (tictactoe) {
+      values = [["human_x", "我执 X"], ["human_o", "我执 O"], ["random", "随机"]];
+    }
     selectedSide = values[0][0];
     buttons.forEach((button, index) => {
       button.dataset.side = values[index][0];
@@ -233,12 +250,16 @@
     const stone = document.getElementById("turnStone");
     const label = document.getElementById("turnLabel");
     stone.className = "turn-stone";
+    stone.textContent = "";
     if (!room.game) {
       label.textContent = statusLabel(room.status);
       return;
     }
     const xiangqi = room.game_type === "xiangqi";
-    const humanSide = xiangqi ? room.game.human_side : room.game.human_color;
+    const tictactoe = room.game_type === "tictactoe";
+    const humanSide = xiangqi
+      ? room.game.human_side
+      : (tictactoe ? room.game.human_mark : room.game.human_color);
     const humanTurn = room.game.turn === humanSide;
     if (pendingMove) {
       label.textContent = "Bot 思考中";
@@ -249,6 +270,9 @@
     }
     if (xiangqi) {
       stone.classList.add(room.game.turn === "red" ? "red" : "black");
+    } else if (tictactoe) {
+      stone.classList.add(room.game.turn === 1 ? "x" : "o");
+      stone.textContent = room.game.turn === 1 ? "X" : "O";
     } else {
       stone.classList.add(room.game.turn === 1 ? "black" : "white");
     }
@@ -256,7 +280,76 @@
 
   function drawBoard() {
     if (room?.game_type === "xiangqi") drawXiangqi();
+    else if (room?.game_type === "tictactoe") drawTicTacToe();
     else drawGomoku();
+  }
+
+  function drawTicTacToe() {
+    const size = board.width;
+    const inset = 58;
+    const playSize = size - inset * 2;
+    const cell = playSize / 3;
+    context.clearRect(0, 0, size, size);
+    context.fillStyle = "#f3f0e8";
+    context.fillRect(0, 0, size, size);
+    context.strokeStyle = "#3e4a44";
+    context.lineWidth = 8;
+    context.lineCap = "round";
+    for (let index = 1; index < 3; index += 1) {
+      const position = inset + index * cell;
+      context.beginPath();
+      context.moveTo(position, inset);
+      context.lineTo(position, size - inset);
+      context.stroke();
+      context.beginPath();
+      context.moveTo(inset, position);
+      context.lineTo(size - inset, position);
+      context.stroke();
+    }
+    const cells = (room?.game?.board || []).map((row) => row.slice());
+    if (
+      pendingMove?.kind === "tictactoe"
+      && !cells?.[pendingMove.row]?.[pendingMove.column]
+    ) {
+      cells[pendingMove.row][pendingMove.column] = pendingMove.mark;
+    }
+    const lastMove = pendingMove?.kind === "tictactoe"
+      ? [pendingMove.row, pendingMove.column]
+      : room?.game?.last_move;
+    if (Array.isArray(lastMove)) {
+      context.fillStyle = "rgba(33, 92, 69, .09)";
+      context.fillRect(
+        inset + lastMove[1] * cell + 10,
+        inset + lastMove[0] * cell + 10,
+        cell - 20,
+        cell - 20,
+      );
+    }
+    cells.forEach((row, rowIndex) => row.forEach((mark, columnIndex) => {
+      if (mark) drawTicTacToeMark(rowIndex, columnIndex, mark, inset, cell);
+    }));
+  }
+
+  function drawTicTacToeMark(row, column, mark, inset, cell) {
+    const centerX = inset + (column + 0.5) * cell;
+    const centerY = inset + (row + 0.5) * cell;
+    const radius = cell * 0.27;
+    context.lineWidth = 15;
+    context.lineCap = "round";
+    if (mark === 1) {
+      context.strokeStyle = "#a33d35";
+      context.beginPath();
+      context.moveTo(centerX - radius, centerY - radius);
+      context.lineTo(centerX + radius, centerY + radius);
+      context.moveTo(centerX + radius, centerY - radius);
+      context.lineTo(centerX - radius, centerY + radius);
+      context.stroke();
+      return;
+    }
+    context.strokeStyle = "#236a72";
+    context.beginPath();
+    context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    context.stroke();
   }
 
   function drawGomoku() {
@@ -454,7 +547,42 @@
   async function moveAt(event) {
     if (busy || !room?.is_player || room.status !== "active" || !room.game) return;
     if (room.game_type === "xiangqi") await moveXiangqi(event);
+    else if (room.game_type === "tictactoe") await moveTicTacToe(event);
     else await moveGomoku(event);
+  }
+
+  async function moveTicTacToe(event) {
+    if (room.game.turn !== room.game.human_mark) return;
+    const rect = board.getBoundingClientRect();
+    const scaleX = board.width / rect.width;
+    const scaleY = board.height / rect.height;
+    const x = (event.clientX - rect.left) * scaleX;
+    const y = (event.clientY - rect.top) * scaleY;
+    const inset = 58;
+    const cell = (board.width - inset * 2) / 3;
+    const column = Math.floor((x - inset) / cell);
+    const row = Math.floor((y - inset) / cell);
+    if (row < 0 || row > 2 || column < 0 || column > 2) return;
+    if (room.game.board?.[row]?.[column]) {
+      showToast("这个位置已经有棋子了");
+      return;
+    }
+    busy = true;
+    pendingMove = { kind: "tictactoe", row, column, mark: room.game.human_mark };
+    render();
+    try {
+      const data = await request("POST", "move", { visitor_token: visitorToken, row, column });
+      pendingMove = null;
+      room = data.room;
+      render();
+    } catch (error) {
+      pendingMove = null;
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "无法落子");
+    } finally {
+      busy = false;
+      render();
+    }
   }
 
   async function moveGomoku(event) {

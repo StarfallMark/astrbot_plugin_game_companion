@@ -186,3 +186,35 @@ async def test_xiangqi_move_endpoint_accepts_start_and_end_coordinates() -> None
     assert response.status == 200
     assert payload["data"]["room"]["game"]["last_move"] == [6, 0, 5, 0]
     assert payload["data"]["room"]["status"] == "finished"
+
+
+@pytest.mark.asyncio
+async def test_tictactoe_move_endpoint_accepts_cell_coordinates() -> None:
+    server = make_server(0)
+    room = await server.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="tictactoe",
+        difficulty="easy",
+    )
+    visitor = await server.manager.join(room)
+    await server.manager.claim_and_start(room, visitor.token, "human_x")
+
+    app = server._build_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            f"/api/room/{room.access_token}/move",
+            json={"visitor_token": visitor.token, "row": 1, "column": 1},
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    game = payload["data"]["room"]["game"]
+    assert game["board"][1][1] == 1
+    assert game["move_count"] == 2
