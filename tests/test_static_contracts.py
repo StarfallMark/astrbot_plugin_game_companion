@@ -98,6 +98,15 @@ def test_natural_language_rematch_is_routed_to_the_existing_room() -> None:
     assert "绝不能 close 后调用创建工具" in source
 
 
+def test_room_link_is_delivered_outside_model_rewrite_with_fallback() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "link_delivered = await self._deliver_room_link" in source
+    assert '"room_url": "" if link_delivered else url' in source
+    assert "MessageChain([Plain(\"\\n\".join(lines))])" in source
+    assert "将交由模型回复回退" in source
+
+
 def test_browser_reports_departure_with_heartbeat_fallback() -> None:
     script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")

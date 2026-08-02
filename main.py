@@ -160,13 +160,20 @@ class GameCompanionPlugin(Star):
                 confirm_abandon=self._value_bool(kwargs.get("confirm_abandon")),
             )
             url = self._room_url(room)
+            link_delivered = await self._deliver_room_link(
+                room,
+                url,
+                reused=reused,
+                restarted=restarted,
+            )
         except (ValueError, RuntimeError, PermissionError, OSError) as exc:
             return self._json_error(str(exc))
         return json.dumps(
             {
                 "ok": True,
                 "room_id": room.room_id,
-                "room_url": url,
+                "room_url": "" if link_delivered else url,
+                "link_delivered": link_delivered,
                 "game_type": room.game_type,
                 "difficulty": room.difficulty,
                 "admin_room": room.admin_room,
@@ -174,7 +181,10 @@ class GameCompanionPlugin(Star):
                 "restarted_game": restarted,
                 "entry_timeout_seconds": self.manager.empty_player_timeout,
                 "instruction": (
-                    "已复用当前会话的原房间，不得关闭它或创建新房间；完整保留 room_url。"
+                    "房间链接已由插件作为独立纯文字消息发送；正常延续人格聊天，"
+                    "不要复述、改写或重新生成链接。"
+                    if link_delivered
+                    else "已复用当前会话的原房间，不得关闭它或创建新房间；完整保留 room_url。"
                     if reused
                     else self._room_link_instruction()
                 ),
@@ -772,6 +782,50 @@ class GameCompanionPlugin(Star):
             )
         except Exception as exc:
             logger.debug("[GameCompanion] 回发游戏消息失败: %s", exc)
+
+    async def _deliver_room_link(
+        self,
+        room: GameRoom,
+        url: str,
+        *,
+        reused: bool,
+        restarted: bool,
+    ) -> bool:
+        if restarted:
+            title = "新一局已在原游戏房间开始："
+        elif reused:
+            title = "继续使用当前游戏房间："
+        else:
+            title = f"{self._game_label(room.game_type)}房间已准备好："
+        lines = [title, url]
+        if room.player is None and self.manager.empty_player_timeout:
+            lines.append(
+                f"请在 {self.manager.empty_player_timeout} 秒内进入玩家席，"
+                "否则房间会自动销毁。"
+            )
+        try:
+            delivered = await self.context.send_message(
+                room.session_id,
+                MessageChain([Plain("\n".join(lines))]),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[GameCompanion] 独立发送房间链接失败，将交由模型回复回退: %s",
+                exc,
+            )
+            return False
+        if not delivered:
+            logger.warning(
+                "[GameCompanion] 未找到房间会话对应平台，将交由模型回复回退: session=%s",
+                room.session_id,
+            )
+            return False
+        logger.info(
+            "[GameCompanion] 房间链接已作为独立纯文字消息发送: room=%s session=%s",
+            room.room_id,
+            room.session_id,
+        )
+        return True
 
     async def _sync_conversation_pair(
         self, room: GameRoom, game_event: str, bot_text: str
