@@ -18,13 +18,14 @@ from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api.web import request
 
 from .gomoku import Difficulty
-from .models import GameRoom
+from .models import GameRoom, GameType
+from .pikafish import PikafishService
 from .room_manager import RoomManager
 from .server import GameRoomServer
 from .tunnel import QuickTunnel
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
@@ -68,6 +69,14 @@ class GameCompanionPlugin(Star):
             "game.commentary_cooldown_seconds", 45, minimum=10, maximum=600
         )
 
+        self.xiangqi_engine = PikafishService(
+            data_dir=self.data_dir,
+            configured_path=self._cfg_str("xiangqi.engine_path", ""),
+            download_proxy=self._cfg_str("xiangqi.download_proxy", ""),
+            allow_download=self._cfg_bool("xiangqi.allow_engine_download", True),
+            auto_download=self._cfg_bool("xiangqi.auto_download_engine", False),
+        )
+
         self.manager = RoomManager(
             max_group_rooms=self._cfg_non_negative("rooms.max_group_rooms", 1),
             max_private_rooms=self._cfg_non_negative("rooms.max_private_rooms", 1),
@@ -75,6 +84,7 @@ class GameCompanionPlugin(Star):
                 "rooms.empty_player_timeout_seconds", 60
             ),
             idle_timeout=self._cfg_non_negative("rooms.idle_timeout_seconds", 300),
+            xiangqi_engine=self.xiangqi_engine,
             event_callback=self._on_room_event,
         )
         self.room_server = GameRoomServer(
@@ -119,6 +129,7 @@ class GameCompanionPlugin(Star):
         self._background_tasks.clear()
         await self.quick_tunnel.stop()
         await self.room_server.stop()
+        await self.xiangqi_engine.close()
         logger.info("[GameCompanion] 所有运行态房间均已销毁")
 
     @filter.llm_tool(name="game_companion_create_room")
@@ -126,30 +137,37 @@ class GameCompanionPlugin(Star):
         """仅在用户明确想和 Bot 玩游戏时创建可视化游戏房间。
 
         棋力必须由你结合当前人格、关系和用户请求自行决定，不能把棋力选择交给网页用户。
-        当前仅支持 gomoku。不要因为普通聊天中偶然提到游戏名称就调用本工具。
+        支持 gomoku（五子棋）和 xiangqi（中国象棋）。不要因为普通聊天中偶然提到游戏名称就调用本工具。
         当前 QQ 会话已有房间时绝不能先关闭再创建；用户说“再来一局”必须调用
         game_companion_control_room 的 rematch 动作，在原房间直接开始下一局。
+        若已有另一种游戏正在进行，必须先得到用户明确同意放弃当前局，再传 confirm_abandon=true。
 
         Args:
-            game_type(string): 游戏类型，当前固定为 gomoku。
+            game_type(string): 游戏类型，只能是 gomoku 或 xiangqi。
             difficulty(string): 你决定使用的棋力，只能是 easy、normal、hard。
+            confirm_abandon(boolean): 切换游戏且当前局未结束时，用户是否已明确同意放弃本局。
         """
-        game_type = str(kwargs.get("game_type") or "gomoku").strip().lower()
-        if game_type not in {"gomoku", "五子棋"}:
-            return self._json_error("目前只支持五子棋")
+        try:
+            game_type = self._game_type(kwargs.get("game_type"))
+        except ValueError as exc:
+            return self._json_error(str(exc))
         difficulty = self._difficulty(kwargs.get("difficulty"))
         try:
             room, reused, restarted = await self._create_or_reuse_room_from_event(
-                event, difficulty
+                event,
+                difficulty,
+                game_type,
+                confirm_abandon=self._value_bool(kwargs.get("confirm_abandon")),
             )
             url = self._room_url(room)
-        except (ValueError, RuntimeError, PermissionError) as exc:
+        except (ValueError, RuntimeError, PermissionError, OSError) as exc:
             return self._json_error(str(exc))
         return json.dumps(
             {
                 "ok": True,
                 "room_id": room.room_id,
                 "room_url": url,
+                "game_type": room.game_type,
                 "difficulty": room.difficulty,
                 "admin_room": room.admin_room,
                 "reused_room": reused,
@@ -168,16 +186,18 @@ class GameCompanionPlugin(Star):
     async def control_room_tool(self, event: AstrMessageEvent, **kwargs: Any) -> str:
         """处理用户在真实 QQ 会话中提出的游戏房间操作。
 
-        身份确认、抢占纠正、悔棋、暂停、继续、认输、再来一局和结束房间必须使用本工具，不能仅口头答应。
+        身份确认、抢占纠正、悔棋、暂停、继续、认输、再来一局、切换游戏和结束房间必须使用本工具，不能仅口头答应。
         悔棋是否同意由你结合人格决定，并通过 allow 表达决定。
         用户说“再来一局”时使用 rematch，保留原房间和链接，不得先 close 再创建房间。
 
         Args:
-            action(string): status、confirm_player、correct_player、undo、pause、resume、resign、rematch、close。
+            action(string): status、confirm_player、correct_player、undo、pause、resume、resign、rematch、switch_game、close。
             room_id(string): 可选房间编号；当前会话只有一个房间时可以留空。
             visitor_number(number): correct_player 时创建者声明的浏览器序号。
             allow(boolean): undo 时你是否同意悔棋。
             difficulty(string): rematch 时你根据人格决定的新棋力，只能是 easy、normal、hard。
+            game_type(string): switch_game 时切换到 gomoku 或 xiangqi。
+            confirm_abandon(boolean): 当前局未结束时，用户是否已明确同意放弃本局。
         """
         action = str(kwargs.get("action") or "status").strip().lower()
         actor_qq = str(event.get_sender_id() or "").strip()
@@ -200,7 +220,7 @@ class GameCompanionPlugin(Star):
             elif action == "undo":
                 if not authorized:
                     raise PermissionError("只有房主、当前玩家或游戏管理员能提出悔棋")
-                if not bool(kwargs.get("allow")):
+                if not self._value_bool(kwargs.get("allow")):
                     room.add_message("bot", "这次不悔棋，继续下吧。")
                     return json.dumps(
                         {"ok": True, "accepted": False}, ensure_ascii=False
@@ -242,6 +262,27 @@ class GameCompanionPlugin(Star):
                     },
                     ensure_ascii=False,
                 )
+            elif action == "switch_game":
+                if not authorized:
+                    raise PermissionError("没有切换该房间游戏的权限")
+                target = self._game_type(kwargs.get("game_type"))
+                switched = await self.manager.switch_game(
+                    room,
+                    target,
+                    force=self._value_bool(kwargs.get("confirm_abandon")),
+                )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "action": action,
+                        "room_id": room.room_id,
+                        "room_url": self._room_url(room),
+                        "game_type": room.game_type,
+                        "switched": switched,
+                        "instruction": "已保留原房间、玩家和链接，只切换了游戏。",
+                    },
+                    ensure_ascii=False,
+                )
             elif action == "close":
                 if not authorized:
                     raise PermissionError("没有关闭该房间的权限")
@@ -252,7 +293,7 @@ class GameCompanionPlugin(Star):
                 {"ok": True, "action": action, "room_id": room.room_id},
                 ensure_ascii=False,
             )
-        except (ValueError, PermissionError) as exc:
+        except (ValueError, RuntimeError, PermissionError, OSError) as exc:
             return self._json_error(str(exc))
 
     @filter.command("游戏伴侣")
@@ -261,10 +302,13 @@ class GameCompanionPlugin(Star):
         rooms = self.manager.for_session(event.unified_msg_origin)
         if not rooms:
             yield event.plain_result(
-                "当前会话没有活动游戏房间。直接告诉我想玩五子棋即可。"
+                "当前会话没有活动游戏房间。直接告诉我想玩五子棋或象棋即可。"
             )
             return
-        labels = [f"{room.room_id}：{room.status}" for room in rooms]
+        labels = [
+            f"{room.room_id}：{self._game_label(room.game_type)}，{room.status}"
+            for room in rooms
+        ]
         yield event.plain_result("当前游戏房间：\n" + "\n".join(labels))
 
     @filter.on_llm_request(priority=-10)
@@ -280,9 +324,10 @@ class GameCompanionPlugin(Star):
             player = room.player
             game = room.game
             lines.append(
-                "房间 {room_id}：状态={status}，创建者QQ={creator}，玩家序号={number}，"
+                "房间 {room_id}：游戏={game_type}，状态={status}，创建者QQ={creator}，玩家序号={number}，"
                 "已确认身份={confirmed}，棋力={difficulty}，手数={moves}。".format(
                     room_id=room.room_id,
+                    game_type=self._game_label(room.game_type),
                     status=room.status,
                     creator=room.creator_qq,
                     number=player.number if player else "无",
@@ -292,7 +337,7 @@ class GameCompanionPlugin(Star):
                 )
             )
         lines.append(
-            "涉及身份、悔棋、暂停、认输、再来一局或结束时调用 game_companion_control_room；"
+            "涉及身份、悔棋、暂停、认输、再来一局、切换游戏或结束时调用 game_companion_control_room；"
             "再来一局必须使用 rematch 并保留原房间，绝不能 close 后调用创建工具；普通闲聊照常回答。"
         )
         lines.append("</game_companion_context>")
@@ -301,7 +346,10 @@ class GameCompanionPlugin(Star):
         ).strip()
 
     async def _create_room_from_event(
-        self, event: AstrMessageEvent, difficulty: Difficulty
+        self,
+        event: AstrMessageEvent,
+        difficulty: Difficulty,
+        game_type: GameType,
     ) -> GameRoom:
         if not self.server_enabled:
             raise RuntimeError("游戏房间服务已在插件配置中关闭")
@@ -327,18 +375,26 @@ class GameCompanionPlugin(Star):
             creator_qq=creator_qq,
             creator_name=str(event.get_sender_name() or "").strip(),
             admin_room=source == "group" and creator_qq in self.game_admin_ids,
+            game_type=game_type,
             difficulty=difficulty,
         )
         return room
 
     async def _create_or_reuse_room_from_event(
-        self, event: AstrMessageEvent, difficulty: Difficulty
+        self,
+        event: AstrMessageEvent,
+        difficulty: Difficulty,
+        game_type: GameType,
+        *,
+        confirm_abandon: bool,
     ) -> tuple[GameRoom, bool, bool]:
         rooms = self.manager.for_session(event.unified_msg_origin)
         if len(rooms) > 1:
             raise ValueError("当前会话已有多个活动房间，请先说明要使用的房间编号")
         if not rooms:
-            room = await self._create_room_from_event(event, difficulty)
+            if game_type == "xiangqi":
+                await self.xiangqi_engine.ensure_ready()
+            room = await self._create_room_from_event(event, difficulty, game_type)
             return room, False, False
         room = rooms[0]
         restarted = False
@@ -347,7 +403,13 @@ class GameCompanionPlugin(Star):
             actor_qq in {room.creator_qq, room.player_qq}
             or actor_qq in self.game_admin_ids
         )
-        if room.status in {"finished", "rematch_pending"} and authorized:
+        if room.game_type != game_type:
+            if not authorized:
+                raise PermissionError("没有切换当前房间游戏的权限")
+            await self.manager.switch_game(
+                room, game_type, force=confirm_abandon
+            )
+        elif room.status in {"finished", "rematch_pending"} and authorized:
             await self.manager.restart_finished_game(room, difficulty=difficulty)
             restarted = True
         await self._ensure_public_access()
@@ -403,14 +465,15 @@ class GameCompanionPlugin(Star):
     async def _on_room_event(
         self, event_name: str, room: GameRoom, payload: dict[str, Any]
     ) -> None:
+        game_label = self._game_label(room.game_type)
         if event_name == "game_started":
             if room.player_identity_confirmed:
                 self._notify_companion_activity(room, "updated")
             self._spawn(
                 self._comment(
                     room,
-                    "新的一局五子棋刚刚开始，请用当前人格简短说一句开场话。",
-                    history_event="[游戏事件] 新的一局五子棋开始。",
+                    f"新的一局{game_label}刚刚开始，请用当前人格简短说一句开场话。",
+                    history_event=f"[游戏事件] 新的一局{game_label}开始。",
                 )
             )
             return
@@ -418,21 +481,28 @@ class GameCompanionPlugin(Star):
             self._notify_companion_activity(room, "started")
             return
         if event_name == "board_changed" and room.game is not None:
-            tactical = room.game.tactical_state(
-                room.game.human_color
-                if payload.get("actor") == "human"
-                else room.game.bot_color
-            )
-            if (
-                tactical in {"four"}
-                and time.time() - room.last_commentary_at >= self.commentary_cooldown
+            if room.game_type == "gomoku":
+                side = (
+                    room.game.human_color
+                    if payload.get("actor") == "human"
+                    else room.game.bot_color
+                )
+            else:
+                side = None
+            tactical = room.game.tactical_state(side)
+            tactical_prompt = {
+                "four": "棋盘刚出现明显的四子威胁",
+                "major_capture": "棋盘上刚发生了一次重要吃子",
+            }.get(tactical)
+            if tactical_prompt and (
+                time.time() - room.last_commentary_at >= self.commentary_cooldown
             ):
                 room.last_commentary_at = time.time()
                 self._spawn(
                     self._comment(
                         room,
-                        "棋盘刚出现明显的四子威胁，请结合当前人格简短自然地回应。",
-                        history_event="[游戏事件] 棋盘上出现了明显的四子威胁。",
+                        f"{tactical_prompt}，请结合当前人格简短自然地回应。",
+                        history_event=f"[游戏事件] {tactical_prompt}。",
                     )
                 )
             return
@@ -445,13 +515,16 @@ class GameCompanionPlugin(Star):
             self._spawn(
                 self._comment(
                     room,
-                    f"五子棋本局结果是：{result}。请用当前人格简短回应。",
-                    history_event=f"[游戏事件] 五子棋本局结果：{result}。",
+                    f"{game_label}本局结果是：{result}。请用当前人格简短回应。",
+                    history_event=f"[游戏事件] {game_label}本局结果：{result}。",
                 )
             )
             return
         if event_name == "rematch_requested":
             self._spawn(self._decide_rematch(room))
+            return
+        if event_name == "game_switched":
+            self._notify_companion_activity(room, "updated")
             return
         if event_name == "room_destroyed":
             self._notify_companion_activity(room, "ended")
@@ -508,7 +581,7 @@ class GameCompanionPlugin(Star):
         companion_scene = self._companion_scene_prompt(room)
         system_prompt = (
             f"{persona}\n\n{companion_scene}\n\n{memory}\n\n"
-            "你正在与用户通过游戏伴侣 WebUI 下五子棋。保持原有人格和关系语气，"
+            f"你正在与用户通过游戏伴侣 WebUI 下{self._game_label(room.game_type)}。保持原有人格和关系语气，"
             "只回应当前游戏事件，不输出坐标、规则说明或格式标签。"
         ).strip()
         try:
@@ -567,20 +640,21 @@ class GameCompanionPlugin(Star):
             return ""
 
     async def _record_room_memory(self, room: GameRoom) -> None:
-        if (
-            not self.record_shared_experience
-            or not room.player_identity_confirmed
-            or room.completed_games < 1
-        ):
+        total_completed = sum(score.completed for score in room.scores.values())
+        if not self.record_shared_experience or not room.player_identity_confirmed or total_completed < 1:
             return
         bridge = self._memory_bridge()
         recorder = getattr(bridge, "record_shared_experience", None) if bridge else None
         if not callable(recorder):
             return
-        summary = (
-            f"Bot 与用户完成了 {room.completed_games} 局五子棋："
-            f"用户胜 {room.human_wins} 局，Bot 胜 {room.bot_wins} 局，平局 {room.draws} 局。"
-        )
+        summaries = []
+        for game_type, score in room.scores.items():
+            if score.completed:
+                summaries.append(
+                    f"{self._game_label(game_type)} {score.completed} 局（用户胜 {score.human_wins} 局，"
+                    f"Bot 胜 {score.bot_wins} 局，平局 {score.draws} 局）"
+                )
+        summary = "Bot 与用户完成了游戏：" + "；".join(summaries) + "。"
         try:
             await recorder(
                 content=summary,
@@ -597,10 +671,19 @@ class GameCompanionPlugin(Star):
                 confidence=0.95,
                 importance=0.66,
                 metadata={
-                    "game": "gomoku",
+                    "games": {
+                        game_type: {
+                            "completed": score.completed,
+                            "human_wins": score.human_wins,
+                            "bot_wins": score.bot_wins,
+                            "draws": score.draws,
+                        }
+                        for game_type, score in room.scores.items()
+                        if score.completed
+                    },
                     "room_id": room.room_id,
                     "difficulty": room.difficulty,
-                    "completed_games": room.completed_games,
+                    "completed_games": total_completed,
                 },
             )
         except Exception as exc:
@@ -672,10 +755,10 @@ class GameCompanionPlugin(Star):
                     activity_id,
                     user_id=room.player_qq or room.creator_qq,
                     kind="shared_game",
-                    label="正在和用户下五子棋",
+                    label=f"正在和用户下{self._game_label(room.game_type)}",
                     source_plugin=PLUGIN_NAME,
                     ttl_seconds=max(60, self.manager.idle_timeout or 300),
-                    metadata={"room_id": room.room_id, "game": "gomoku"},
+                    metadata={"room_id": room.room_id, "game": room.game_type},
                 )
         except Exception as exc:
             logger.debug("[GameCompanion] 同步陪伴活动状态失败: %s", exc)
@@ -761,7 +844,7 @@ class GameCompanionPlugin(Star):
             )
 
     def _room_link_instruction(self) -> str:
-        instruction = "最终回复必须完整保留 room_url；说明玩家进入后可选择先后手。"
+        instruction = "最终回复必须完整保留 room_url；说明玩家进入后可选择执棋方。"
         timeout = self.manager.empty_player_timeout
         if timeout:
             instruction += f"明确提醒玩家在 {timeout} 秒内进入玩家席，否则房间会自动销毁。"
@@ -790,6 +873,12 @@ class GameCompanionPlugin(Star):
             ["POST"],
             "Stop game quick tunnel",
         )
+        register_api(
+            f"{PAGE_API_PREFIX}/xiangqi/install",
+            self.page_xiangqi_install,
+            ["POST"],
+            "Install Pikafish",
+        )
 
     async def page_rooms(self) -> dict[str, Any]:
         return {
@@ -804,6 +893,7 @@ class GameCompanionPlugin(Star):
                     "public_base_url": self.public_base_url,
                 },
                 "tunnel": self.quick_tunnel.status(),
+                "xiangqi_engine": self.xiangqi_engine.status(),
                 "limits": {
                     "group": self.manager.max_group_rooms,
                     "private": self.manager.max_private_rooms,
@@ -834,13 +924,26 @@ class GameCompanionPlugin(Star):
                 await self.manager.pause(room)
             elif action == "resume":
                 await self.manager.resume(room)
+            elif action == "switch_game":
+                await self.manager.switch_game(
+                    room,
+                    self._game_type(payload.get("game_type")),
+                    force=self._value_bool(payload.get("confirm_abandon")),
+                )
             elif action == "close":
                 await self.manager.destroy(room.room_id, "管理员关闭了房间")
             else:
                 raise ValueError("不支持的管理操作")
-        except (ValueError, PermissionError) as exc:
+        except (ValueError, RuntimeError, PermissionError) as exc:
             return {"status": "error", "message": str(exc), "data": {}}
         return {"status": "ok", "data": {"room_id": room.room_id, "action": action}}
+
+    async def page_xiangqi_install(self) -> dict[str, Any]:
+        try:
+            status = await self.xiangqi_engine.install_latest()
+        except (ValueError, RuntimeError, PermissionError, OSError) as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
+        return {"status": "ok", "data": {"xiangqi_engine": status}}
 
     async def page_tunnel_start(self) -> dict[str, Any]:
         if self.public_base_url:
@@ -914,6 +1017,30 @@ class GameCompanionPlugin(Star):
     def _difficulty(value: Any) -> Difficulty:
         normalized = str(value or "normal").strip().lower()
         return normalized if normalized in {"easy", "normal", "hard"} else "normal"  # type: ignore[return-value]
+
+    @staticmethod
+    def _game_type(value: Any) -> GameType:
+        normalized = str(value or "gomoku").strip().lower()
+        aliases = {
+            "gomoku": "gomoku",
+            "五子棋": "gomoku",
+            "xiangqi": "xiangqi",
+            "象棋": "xiangqi",
+            "中国象棋": "xiangqi",
+        }
+        if normalized not in aliases:
+            raise ValueError("目前只支持五子棋和中国象棋")
+        return aliases[normalized]  # type: ignore[return-value]
+
+    @staticmethod
+    def _game_label(game_type: GameType) -> str:
+        return {"gomoku": "五子棋", "xiangqi": "中国象棋"}[game_type]
+
+    @staticmethod
+    def _value_bool(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on", "是", "确认"}
+        return value is True
 
     @staticmethod
     def _validated_public_url(value: str) -> str:

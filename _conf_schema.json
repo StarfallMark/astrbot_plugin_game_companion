@@ -98,6 +98,36 @@
       }
     }
   },
+  "xiangqi": {
+    "description": "中国象棋引擎",
+    "type": "object",
+    "hint": "象棋使用独立 Pikafish 进程。引擎不可用时只禁用象棋，不影响五子棋。",
+    "items": {
+      "engine_path": {
+        "description": "Pikafish 可执行文件路径",
+        "type": "string",
+        "default": "",
+        "hint": "留空时使用游戏管理台安装的托管版本。可执行文件同目录必须包含 pikafish.nnue。"
+      },
+      "allow_engine_download": {
+        "description": "允许管理台下载 Pikafish",
+        "type": "bool",
+        "default": true
+      },
+      "auto_download_engine": {
+        "description": "首次创建象棋房间时自动下载",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。推荐在游戏管理台确认后按需安装。"
+      },
+      "download_proxy": {
+        "description": "Pikafish 下载代理",
+        "type": "string",
+        "default": "",
+        "hint": "例如 http://127.0.0.1:7890；留空时继承 HTTPS_PROXY 或 HTTP_PROXY。"
+      }
+    }
+  },
   "memory": {
     "description": "陪伴记忆",
     "type": "object",
@@ -111,4 +141,3 @@
     }
   }
 }
-

@@ -7,7 +7,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .gomoku import BLACK, WHITE, Difficulty, GomokuGame
-from .models import GameRoom, RoomSource, Visitor
+from .models import GameRoom, GameType, RoomSource, Visitor
+from .pikafish import PikafishService
+from .xiangqi import BLACK as XIANGQI_BLACK
+from .xiangqi import RED as XIANGQI_RED
+from .xiangqi import XiangqiGame
 
 RoomCallback = Callable[[str, GameRoom, dict[str, Any]], Awaitable[None]]
 
@@ -27,12 +31,14 @@ class RoomManager:
         max_private_rooms: int = 1,
         empty_player_timeout: int = 60,
         idle_timeout: int = 300,
+        xiangqi_engine: PikafishService | None = None,
         event_callback: RoomCallback | None = None,
     ) -> None:
         self.max_group_rooms = max(0, int(max_group_rooms))
         self.max_private_rooms = max(0, int(max_private_rooms))
         self.empty_player_timeout = max(0, int(empty_player_timeout))
         self.idle_timeout = max(0, int(idle_timeout))
+        self.xiangqi_engine = xiangqi_engine
         self.event_callback = event_callback
         self.rooms: dict[str, GameRoom] = {}
         self._access_index: dict[str, str] = {}
@@ -49,6 +55,7 @@ class RoomManager:
         creator_qq: str,
         creator_name: str,
         admin_room: bool,
+        game_type: GameType = "gomoku",
         difficulty: Difficulty,
     ) -> GameRoom:
         """Create a room atomically under the source-wide quota."""
@@ -74,6 +81,7 @@ class RoomManager:
                 creator_qq=creator_qq,
                 creator_name=creator_name,
                 admin_room=admin_room,
+                game_type=game_type,
                 difficulty=difficulty,
             )
             self.rooms[room_id] = room
@@ -199,31 +207,60 @@ class RoomManager:
 
     async def start_game(self, room: GameRoom, visitor_token: str, side: str) -> None:
         """Start a game after a seat has been assigned."""
-        normalized_side = str(side or "human_black").strip().lower()
-        if normalized_side not in {"human_black", "bot_black", "random"}:
-            normalized_side = "human_black"
-        if normalized_side == "random":
-            normalized_side = secrets.choice(("human_black", "bot_black"))
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             if visitor.token != room.player_token:
                 raise PermissionError("只有当前玩家可以开始对局")
             if room.status not in {"setup", "finished", "rematch_pending"}:
                 raise ValueError("当前房间状态不能开始新对局")
-            human_color = BLACK if normalized_side == "human_black" else WHITE
-            room.game = GomokuGame(human_color=human_color, difficulty=room.difficulty)
+            if room.game_type == "xiangqi":
+                engine = self._require_xiangqi_engine()
+                normalized_side = str(side or "human_red").strip().lower()
+                if normalized_side not in {"human_red", "human_black", "random"}:
+                    normalized_side = "human_red"
+                if normalized_side == "random":
+                    normalized_side = secrets.choice(("human_red", "human_black"))
+                human_side = (
+                    XIANGQI_RED if normalized_side == "human_red" else XIANGQI_BLACK
+                )
+                room.game = await XiangqiGame.create(
+                    engine,
+                    human_side=human_side,
+                    difficulty=room.difficulty,
+                )
+                side_label = "红" if human_side == XIANGQI_RED else "黑"
+            else:
+                normalized_side = str(side or "human_black").strip().lower()
+                if normalized_side not in {"human_black", "bot_black", "random"}:
+                    normalized_side = "human_black"
+                if normalized_side == "random":
+                    normalized_side = secrets.choice(("human_black", "bot_black"))
+                human_color = BLACK if normalized_side == "human_black" else WHITE
+                room.game = GomokuGame(
+                    human_color=human_color, difficulty=room.difficulty
+                )
+                side_label = "黑" if human_color == BLACK else "白"
             room.status = "active"
             room.touch()
             room.add_message(
                 "system",
-                f"新对局开始，玩家执{'黑' if human_color == BLACK else '白'}，Bot 使用{self._difficulty_label(room.difficulty)}棋力。",
+                f"新对局开始，玩家执{side_label}，Bot 使用{self._difficulty_label(room.difficulty)}棋力。",
             )
         await self._emit("game_started", room, {})
-        if room.game and room.game.turn == room.game.bot_color:
+        if self._is_bot_turn(room):
             await self._bot_turn(room)
 
     async def player_move(
-        self, room: GameRoom, visitor_token: str, row: int, column: int
+        self,
+        room: GameRoom,
+        visitor_token: str,
+        *,
+        row: int = -1,
+        column: int = -1,
+        from_row: int = -1,
+        from_column: int = -1,
+        to_row: int = -1,
+        to_column: int = -1,
     ) -> None:
         """Apply one browser move, then calculate the Bot response off-loop."""
         async with room.lock:
@@ -232,7 +269,16 @@ class RoomManager:
                 raise PermissionError("当前浏览器不在玩家席")
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有正在进行的对局")
-            room.game.place(int(row), int(column), room.game.human_color)
+            if isinstance(room.game, XiangqiGame):
+                await room.game.place_human(
+                    self._require_xiangqi_engine(),
+                    int(from_row),
+                    int(from_column),
+                    int(to_row),
+                    int(to_column),
+                )
+            else:
+                room.game.place(int(row), int(column), room.game.human_color)
             room.touch()
             finished = room.game.finished
         await self._emit("board_changed", room, {"actor": "human"})
@@ -288,17 +334,29 @@ class RoomManager:
                 raise ValueError("当前房间没有可以继续对局的玩家")
             if room.status not in {"finished", "rematch_pending"} or room.game is None:
                 raise ValueError("当前对局尚未结束，不能直接再来一局")
-            human_color = room.game.human_color
             room.difficulty = difficulty
-            room.game = GomokuGame(human_color=human_color, difficulty=difficulty)
+            if isinstance(room.game, XiangqiGame):
+                human_side = room.game.human_side
+                room.game = await XiangqiGame.create(
+                    self._require_xiangqi_engine(),
+                    human_side=human_side,
+                    difficulty=difficulty,
+                )
+                side_label = "红" if human_side == XIANGQI_RED else "黑"
+            else:
+                human_color = room.game.human_color
+                room.game = GomokuGame(
+                    human_color=human_color, difficulty=difficulty
+                )
+                side_label = "黑" if human_color == BLACK else "白"
             room.status = "active"
             room.touch()
             room.add_message(
                 "system",
-                f"新对局开始，玩家继续执{'黑' if human_color == BLACK else '白'}，Bot 使用{self._difficulty_label(difficulty)}棋力。",
+                f"新对局开始，玩家继续执{side_label}，Bot 使用{self._difficulty_label(difficulty)}棋力。",
             )
         await self._emit("game_started", room, {"rematch": True})
-        if room.game and room.game.turn == room.game.bot_color:
+        if self._is_bot_turn(room):
             await self._bot_turn(room)
 
     async def undo(self, room: GameRoom) -> int:
@@ -306,7 +364,10 @@ class RoomManager:
         async with room.lock:
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有可以悔棋的对局")
-            removed = room.game.undo_round()
+            if isinstance(room.game, XiangqiGame):
+                removed = await room.game.undo_round(self._require_xiangqi_engine())
+            else:
+                removed = room.game.undo_round()
             room.touch()
             room.add_message("system", "Bot 同意了悔棋。")
             return removed
@@ -316,7 +377,10 @@ class RoomManager:
         async with room.lock:
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有正在进行的对局")
-            room.game.winner = room.game.bot_color
+            if isinstance(room.game, XiangqiGame):
+                room.game.winner = room.game.bot_side
+            else:
+                room.game.winner = room.game.bot_color
             room.touch()
         await self._finish_game(room)
 
@@ -368,9 +432,41 @@ class RoomManager:
             room.status = "active"
             room.touch()
             room.add_message("system", "对局继续。")
-            bot_turn = room.game.turn == room.game.bot_color
+            bot_turn = self._game_is_bot_turn(room.game)
         if bot_turn:
             await self._bot_turn(room)
+
+    async def switch_game(
+        self,
+        room: GameRoom,
+        game_type: GameType,
+        *,
+        force: bool = False,
+    ) -> bool:
+        """Switch one room's game while preserving access, seats, and scores."""
+        if game_type not in {"gomoku", "xiangqi"}:
+            raise ValueError("不支持的游戏类型")
+        if game_type == "xiangqi":
+            await self._require_xiangqi_engine().ensure_ready()
+        async with room.lock:
+            if room.game_type == game_type:
+                return False
+            if room.status in {"active", "paused"} and not force:
+                raise ValueError("当前对局尚未结束，需要明确放弃本局后才能切换游戏")
+            previous = room.game_type
+            room.game_type = game_type
+            room.game = None
+            room.status = "setup" if room.player_token else "waiting"
+            room.player_empty_since = None if room.player_token else time.time()
+            room.touch()
+            room.add_message(
+                "system",
+                f"游戏已从{self._game_label(previous)}切换为{self._game_label(game_type)}。",
+            )
+        await self._emit(
+            "game_switched", room, {"from": previous, "to": game_type, "forced": force}
+        )
+        return True
 
     async def destroy(self, room_id: str, reason: str) -> GameRoom | None:
         """Destroy a room and release its quota exactly once."""
@@ -439,8 +535,19 @@ class RoomManager:
             if room.status != "active" or room.game is None or room.game.finished:
                 return
             game = room.game
-            move = await asyncio.to_thread(game.choose_bot_move)
-            game.place(move[0], move[1], game.bot_color)
+            if isinstance(game, XiangqiGame):
+                try:
+                    await game.place_bot(self._require_xiangqi_engine())
+                except Exception:
+                    room.status = "paused"
+                    room.add_message(
+                        "system",
+                        "象棋引擎暂时不可用，对局已暂停。恢复引擎后可在 QQ 或管理台继续。",
+                    )
+                    raise
+            else:
+                move = await asyncio.to_thread(game.choose_bot_move)
+                game.place(move[0], move[1], game.bot_color)
             finished = game.finished
         await self._emit("board_changed", room, {"actor": "bot"})
         if finished:
@@ -455,7 +562,7 @@ class RoomManager:
             if room.game.draw:
                 room.draws += 1
                 result = "draw"
-            elif room.game.winner == room.game.human_color:
+            elif self._game_human_won(room.game):
                 room.human_wins += 1
                 result = "human_win"
             else:
@@ -505,3 +612,27 @@ class RoomManager:
     @staticmethod
     def _difficulty_label(difficulty: Difficulty) -> str:
         return {"easy": "简单", "normal": "普通", "hard": "困难"}[difficulty]
+
+    def _require_xiangqi_engine(self) -> PikafishService:
+        if self.xiangqi_engine is None:
+            raise RuntimeError("象棋引擎服务尚未配置")
+        return self.xiangqi_engine
+
+    def _is_bot_turn(self, room: GameRoom) -> bool:
+        return bool(room.game and self._game_is_bot_turn(room.game))
+
+    @staticmethod
+    def _game_is_bot_turn(game: GomokuGame | XiangqiGame) -> bool:
+        if isinstance(game, XiangqiGame):
+            return game.turn == game.bot_side
+        return game.turn == game.bot_color
+
+    @staticmethod
+    def _game_human_won(game: GomokuGame | XiangqiGame) -> bool:
+        if isinstance(game, XiangqiGame):
+            return game.winner == game.human_side
+        return game.winner == game.human_color
+
+    @staticmethod
+    def _game_label(game_type: GameType) -> str:
+        return {"gomoku": "五子棋", "xiangqi": "象棋"}[game_type]

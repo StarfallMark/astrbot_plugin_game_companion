@@ -20,7 +20,8 @@ button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .5; }
 
 .manager-shell { width: min(1280px, calc(100% - 36px)); margin: 0 auto; padding: 24px 0 42px; }
-.manager-header, .title-group, .service-actions, .section-header, dialog header, dialog footer {
+.manager-header, .title-group, .service-actions, .section-header, dialog header, dialog footer,
+.engine-bar, .engine-identity, .engine-actions {
   display: flex;
   align-items: center;
 }
@@ -56,12 +57,19 @@ h2 { margin: 0; font-size: 16px; }
 .metrics strong { display: inline-block; margin: 5px 7px 0 0; font-size: 25px; }
 .metrics small { display: inline; }
 
+.engine-bar { justify-content: space-between; gap: 18px; min-height: 64px; margin-bottom: 18px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.engine-identity, .engine-actions { gap: 10px; min-width: 0; }
+.engine-icon { width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 5px; background: #efe7d6; color: #6d4a27; }
+.engine-icon svg { width: 18px; }
+.engine-identity strong, .engine-identity span { display: block; }
+.engine-identity span { max-width: 680px; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
 .rooms-section { border-top: 1px solid var(--line); padding-top: 16px; }
 .section-header { justify-content: space-between; gap: 18px; margin-bottom: 11px; }
 .section-header span { color: var(--muted); font-size: 12px; }
 .tunnel-url { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
 .table-wrap { position: relative; min-height: 160px; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
-table { width: 100%; min-width: 980px; border-collapse: collapse; }
+table { width: 100%; min-width: 1100px; border-collapse: collapse; }
 th, td { padding: 12px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 13px; }
 th { background: #eef1ee; color: #5d665f; font-size: 11px; font-weight: 650; }
 tbody tr:last-child td { border-bottom: 0; }
@@ -82,6 +90,7 @@ td small { margin-top: 3px; color: var(--muted); }
 .row-actions { display: flex; flex-wrap: wrap; gap: 5px; min-width: 190px; }
 .row-button { width: 30px; min-height: 30px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
 .row-button.danger { border-color: #dbb4ae; color: var(--red); }
+.game-select { min-height: 30px; border: 1px solid var(--line); border-radius: 5px; padding: 0 25px 0 7px; background: var(--surface); color: var(--text); font-size: 12px; }
 .empty-state { min-height: 158px; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--muted); }
 .empty-state[hidden] { display: none; }
 .empty-state svg { width: 28px; }
@@ -112,4 +121,6 @@ dialog footer { justify-content: flex-end; gap: 8px; margin-top: 20px; }
   .metrics div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .section-header { align-items: flex-start; }
   .tunnel-url { max-width: 42%; }
+  .engine-bar { align-items: flex-start; }
+  .engine-actions { flex-wrap: wrap; justify-content: flex-end; }
 }

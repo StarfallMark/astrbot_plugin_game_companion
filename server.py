@@ -183,8 +183,12 @@ class GameRoomServer:
         await self.manager.player_move(
             room,
             visitor_token,
-            int(payload.get("row", -1)),
-            int(payload.get("column", -1)),
+            row=int(payload.get("row", -1)),
+            column=int(payload.get("column", -1)),
+            from_row=int(payload.get("from_row", -1)),
+            from_column=int(payload.get("from_column", -1)),
+            to_row=int(payload.get("to_row", -1)),
+            to_column=int(payload.get("to_column", -1)),
         )
         return self._response({"room": room.public_snapshot(visitor_token)})
 
@@ -227,6 +231,12 @@ class GameRoomServer:
             return web.json_response(
                 {"status": "error", "message": str(exc)},
                 status=400,
+                headers=self._headers("application/json"),
+            )
+        except RuntimeError as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=503,
                 headers=self._headers("application/json"),
             )
         except Exception as exc:

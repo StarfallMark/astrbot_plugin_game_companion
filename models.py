@@ -7,11 +7,21 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .gomoku import Difficulty, GomokuGame
+from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
+GameType = Literal["gomoku", "xiangqi"]
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
 ]
+
+
+@dataclass(slots=True)
+class GameScore:
+    completed: int = 0
+    human_wins: int = 0
+    bot_wins: int = 0
+    draws: int = 0
 
 
 @dataclass(slots=True)
@@ -47,6 +57,7 @@ class GameRoom:
     creator_qq: str
     creator_name: str
     admin_room: bool
+    game_type: GameType
     difficulty: Difficulty
     created_at: float = field(default_factory=time.time)
     last_activity_at: float = field(default_factory=time.time)
@@ -58,11 +69,10 @@ class GameRoom:
     player_qq: str = ""
     player_identity_confirmed: bool = False
     player_seat_locked: bool = False
-    game: GomokuGame | None = None
-    completed_games: int = 0
-    human_wins: int = 0
-    bot_wins: int = 0
-    draws: int = 0
+    game: GomokuGame | XiangqiGame | None = None
+    scores: dict[GameType, GameScore] = field(
+        default_factory=lambda: {"gomoku": GameScore(), "xiangqi": GameScore()}
+    )
     messages: list[dict[str, object]] = field(default_factory=list)
     close_reason: str = ""
     last_commentary_at: float = 0.0
@@ -72,6 +82,42 @@ class GameRoom:
     @property
     def player(self) -> Visitor | None:
         return self.visitors.get(self.player_token)
+
+    @property
+    def current_score(self) -> GameScore:
+        return self.scores[self.game_type]
+
+    @property
+    def completed_games(self) -> int:
+        return self.current_score.completed
+
+    @completed_games.setter
+    def completed_games(self, value: int) -> None:
+        self.current_score.completed = int(value)
+
+    @property
+    def human_wins(self) -> int:
+        return self.current_score.human_wins
+
+    @human_wins.setter
+    def human_wins(self, value: int) -> None:
+        self.current_score.human_wins = int(value)
+
+    @property
+    def bot_wins(self) -> int:
+        return self.current_score.bot_wins
+
+    @bot_wins.setter
+    def bot_wins(self, value: int) -> None:
+        self.current_score.bot_wins = int(value)
+
+    @property
+    def draws(self) -> int:
+        return self.current_score.draws
+
+    @draws.setter
+    def draws(self, value: int) -> None:
+        self.current_score.draws = int(value)
 
     def add_message(self, role: str, content: str) -> None:
         """Append a bounded game-related message for the WebUI."""
@@ -90,7 +136,7 @@ class GameRoom:
         player = self.player
         return {
             "room_id": self.room_id,
-            "game_type": "gomoku",
+            "game_type": self.game_type,
             "source": self.source,
             "admin_room": self.admin_room,
             "status": self.status,
@@ -128,10 +174,20 @@ class GameRoom:
             "creator_qq": self.creator_qq,
             "creator_name": self.creator_name,
             "admin_room": self.admin_room,
+            "game_type": self.game_type,
             "status": self.status,
             "created_at": self.created_at,
             "last_activity_at": self.last_activity_at,
             "difficulty": self.difficulty,
+            "scores": {
+                game_type: {
+                    "human": score.human_wins,
+                    "bot": score.bot_wins,
+                    "draws": score.draws,
+                    "games": score.completed,
+                }
+                for game_type, score in self.scores.items()
+            },
             "player_number": player.number if player else None,
             "player_qq": self.player_qq,
             "player_confirmed": self.player_identity_confirmed,

@@ -17,6 +17,8 @@ def test_config_defaults_match_product_contract() -> None:
     assert rooms["empty_player_timeout_seconds"]["default"] == 60
     assert rooms["idle_timeout_seconds"]["default"] == 300
     assert rooms["allow_non_admin_group_creation"]["default"] is False
+    assert schema["xiangqi"]["items"]["allow_engine_download"]["default"] is True
+    assert schema["xiangqi"]["items"]["auto_download_engine"]["default"] is False
 
 
 def test_metadata_registers_default_management_page() -> None:
@@ -27,6 +29,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
+    assert metadata["version"] == "0.1.1"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -43,7 +46,7 @@ def test_player_move_is_rendered_before_waiting_for_bot_response() -> None:
     script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
     optimistic_render = script.index(
-        "pendingMove = { row, column, color: room.game.human_color };"
+        'pendingMove = { kind: "gomoku", row, column, color: room.game.human_color };'
     )
     move_request = script.index(
         'await request("POST", "move", { visitor_token: visitorToken, row, column })'
@@ -51,6 +54,27 @@ def test_player_move_is_rendered_before_waiting_for_bot_response() -> None:
 
     assert optimistic_render < move_request
     assert "pendingMove = null;" in script[move_request:]
+
+
+def test_xiangqi_webui_uses_server_legal_moves_without_game_switcher() -> None:
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+
+    assert "room.game.legal_moves" in script
+    assert 'room.game_type === "xiangqi"' in script
+    assert "from_row" in script and "to_column" in script
+    assert "switch_game" not in script
+    assert "切换游戏" not in page
+
+
+def test_management_page_can_switch_games_and_install_engine() -> None:
+    script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'action: "switch_game"' in script
+    assert "confirm_abandon: active" in script
+    assert 'endpoint("POST", "xiangqi/install")' in script
 
 
 def test_room_expiry_does_not_stop_the_shared_access_channel() -> None:

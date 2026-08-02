@@ -4,17 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#f2f4f1" />
-  <title>游戏伴侣 · 五子棋</title>
+  <title>游戏伴侣</title>
   <link rel="stylesheet" href="../../assets/app.css" />
 </head>
 <body>
   <main class="game-shell">
     <header class="topbar">
       <div class="brand">
-        <span class="brand-mark"><i data-lucide="grid-3x3"></i></span>
+        <span class="brand-mark"><i id="brandIcon" data-lucide="grid-3x3"></i></span>
         <div>
           <span class="eyebrow">游戏伴侣</span>
-          <h1>五子棋</h1>
+          <h1 id="gameTitle">棋类游戏</h1>
         </div>
       </div>
       <div class="room-state">
@@ -26,7 +26,7 @@
 
     <section class="game-layout">
       <div class="board-stage">
-        <canvas id="board" width="760" height="760" aria-label="十五乘十五五子棋棋盘"></canvas>
+        <canvas id="board" width="760" height="760" aria-label="棋盘"></canvas>
         <div id="boardOverlay" class="board-overlay" hidden>
           <strong id="overlayTitle"></strong>
           <span id="overlayText"></span>
@@ -95,4 +95,3 @@
   <script src="../../assets/app.js"></script>
 </body>
 </html>
-

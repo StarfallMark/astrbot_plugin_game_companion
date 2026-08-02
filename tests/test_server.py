@@ -11,6 +11,14 @@ from astrbot_plugin_game_companion.room_manager import RoomManager
 from astrbot_plugin_game_companion.server import GameRoomServer
 
 
+class EndingXiangqiEngine:
+    async def ensure_ready(self) -> None:
+        return None
+
+    async def legal_moves(self, moves: list[str]) -> list[str]:
+        return ["a3a4"] if not moves else []
+
+
 def make_server(port: int = 6331) -> GameRoomServer:
     plugin = SimpleNamespace(
         public_base_url="",
@@ -140,3 +148,41 @@ async def test_same_origin_leave_beacon_records_browser_departure() -> None:
     assert payload == {"status": "ok", "data": {"left": True}}
     assert not visitor.connected
     assert visitor.left_at is not None
+
+
+@pytest.mark.asyncio
+async def test_xiangqi_move_endpoint_accepts_start_and_end_coordinates() -> None:
+    server = make_server(0)
+    server.manager.xiangqi_engine = EndingXiangqiEngine()  # type: ignore[assignment]
+    room = await server.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="xiangqi",
+        difficulty="normal",
+    )
+    visitor = await server.manager.join(room)
+    await server.manager.claim_and_start(room, visitor.token, "human_red")
+
+    app = server._build_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            f"/api/room/{room.access_token}/move",
+            json={
+                "visitor_token": visitor.token,
+                "from_row": 6,
+                "from_column": 0,
+                "to_row": 5,
+                "to_column": 0,
+            },
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["data"]["room"]["game"]["last_move"] == [6, 0, 5, 0]
+    assert payload["data"]["room"]["status"] == "finished"

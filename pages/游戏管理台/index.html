@@ -35,6 +35,22 @@
       <div><span>在线访客</span><strong id="visitorCount">0</strong></div>
     </section>
 
+    <section class="engine-bar" aria-label="中国象棋引擎">
+      <div class="engine-identity">
+        <span class="engine-icon"><i data-lucide="cpu"></i></span>
+        <div>
+          <strong>中国象棋引擎</strong>
+          <span id="engineDetail">正在检查 Pikafish</span>
+        </div>
+      </div>
+      <div class="engine-actions">
+        <span id="engineBadge" class="service-badge">检查中</span>
+        <button id="engineAction" class="secondary-button" type="button" disabled>
+          <i data-lucide="download"></i><span>安装 / 更新</span>
+        </button>
+      </div>
+    </section>
+
     <section class="rooms-section">
       <header class="section-header">
         <div>
@@ -48,6 +64,7 @@
           <thead>
             <tr>
               <th>房间</th>
+              <th>游戏</th>
               <th>来源与创建者</th>
               <th>房内成员</th>
               <th>玩家席</th>
@@ -99,4 +116,3 @@
   <script src="./manager.js"></script>
 </body>
 </html>
-

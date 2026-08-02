@@ -7,6 +7,7 @@
   const toast = document.getElementById("toast");
   let rooms = [];
   let tunnel = {};
+  let xiangqiEngine = {};
   let toastTimer = 0;
   let refreshTimer = 0;
 
@@ -80,6 +81,42 @@
       identity.append(createText("strong", room.room_id, "room-code"));
       identity.append(createText("small", room.admin_room ? "管理员房间" : "普通房间"));
 
+      const game = document.createElement("td");
+      const gameSelect = document.createElement("select");
+      gameSelect.className = "game-select";
+      gameSelect.title = "切换游戏";
+      [["gomoku", "五子棋"], ["xiangqi", "中国象棋"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = room.game_type === value;
+        gameSelect.appendChild(option);
+      });
+      gameSelect.addEventListener("change", async () => {
+        const target = gameSelect.value;
+        const active = ["active", "paused"].includes(room.status);
+        if (active && !window.confirm("当前对局尚未结束。确认放弃本局并切换游戏？")) {
+          gameSelect.value = room.game_type;
+          return;
+        }
+        gameSelect.disabled = true;
+        try {
+          await endpoint("POST", "room/action", {
+            room_id: room.room_id,
+            action: "switch_game",
+            game_type: target,
+            confirm_abandon: active,
+          });
+          showToast("房间游戏已切换");
+          await loadRooms();
+        } catch (error) {
+          gameSelect.value = room.game_type;
+          gameSelect.disabled = false;
+          showToast(error?.message || "切换失败");
+        }
+      });
+      game.appendChild(gameSelect);
+
       const origin = document.createElement("td");
       origin.append(createText("strong", room.source === "group" ? `群聊 ${room.group_id || ""}` : "私聊"));
       origin.append(createText("small", `${room.creator_name || "创建者"} · ${room.creator_qq || "未知 QQ"}`));
@@ -138,7 +175,7 @@
       if (room.status === "paused") actionList.appendChild(actionButton("play", "继续", "resume", room));
       actionList.appendChild(actionButton("x", "关闭房间", "close", room, "danger"));
       actions.appendChild(actionList);
-      row.append(identity, origin, members, player, state, actions);
+      row.append(identity, game, origin, members, player, state, actions);
       body.appendChild(row);
     });
     icons();
@@ -186,6 +223,27 @@
     }
   }
 
+  function renderEngine(data) {
+    xiangqiEngine = data.xiangqi_engine || {};
+    const badge = document.getElementById("engineBadge");
+    const detail = document.getElementById("engineDetail");
+    const action = document.getElementById("engineAction");
+    if (xiangqiEngine.available) {
+      badge.textContent = xiangqiEngine.running ? "运行中" : "已安装";
+      badge.className = "service-badge online";
+      const version = xiangqiEngine.version || "版本未知";
+      detail.textContent = `${version} · ${xiangqiEngine.path || xiangqiEngine.platform || ""}`;
+    } else {
+      badge.textContent = "未安装";
+      badge.className = xiangqiEngine.error ? "service-badge error" : "service-badge";
+      detail.textContent = xiangqiEngine.error || `适用版本：${xiangqiEngine.platform || "自动检测"}`;
+    }
+    action.disabled = !xiangqiEngine.allow_download || xiangqiEngine.configured;
+    action.title = xiangqiEngine.configured
+      ? "当前使用插件配置中指定的引擎"
+      : (xiangqiEngine.allow_download ? "从 Pikafish 官方发行版安装或更新" : "插件配置已禁止下载");
+  }
+
   async function loadRooms() {
     window.clearTimeout(refreshTimer);
     try {
@@ -193,6 +251,7 @@
       rooms = Array.isArray(data.rooms) ? data.rooms : [];
       renderMetrics(data);
       renderService(data);
+      renderEngine(data);
       renderRooms();
       document.getElementById("lastUpdated").textContent = `更新于 ${new Date().toLocaleTimeString()}`;
       refreshTimer = window.setTimeout(loadRooms, 2500);
@@ -263,8 +322,26 @@
     }
   }
 
+  async function installEngine() {
+    if (!window.confirm("将通过已配置的代理下载 Pikafish 官方发行包。继续安装或更新？")) return;
+    const action = document.getElementById("engineAction");
+    action.disabled = true;
+    action.querySelector("span").textContent = "正在安装";
+    try {
+      await endpoint("POST", "xiangqi/install");
+      showToast("Pikafish 已安装并通过启动检查");
+      await loadRooms();
+    } catch (error) {
+      showToast(error?.message || "引擎安装失败");
+    } finally {
+      action.querySelector("span").textContent = "安装 / 更新";
+      action.disabled = !xiangqiEngine.allow_download || xiangqiEngine.configured;
+    }
+  }
+
   document.getElementById("refreshAction").addEventListener("click", loadRooms);
   document.getElementById("tunnelAction").addEventListener("click", toggleTunnel);
+  document.getElementById("engineAction").addEventListener("click", installEngine);
   document.getElementById("confirmAssign").addEventListener("click", confirmAssign);
   icons();
   loadRooms();

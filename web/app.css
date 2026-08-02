@@ -84,6 +84,11 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
   box-shadow: 0 12px 28px rgba(44, 36, 25, .12);
 }
 
+.board-stage.xiangqi {
+  max-width: 684px;
+  aspect-ratio: 9 / 10;
+}
+
 #board { display: block; width: 100%; height: 100%; touch-action: manipulation; }
 .board-overlay {
   position: absolute;
@@ -110,6 +115,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
 .turn-stone { width: 34px; height: 34px; border-radius: 50%; background: #d8ddd9; box-shadow: inset 0 0 0 1px #c4cac6; }
 .turn-stone.black { background: #252926; box-shadow: inset 0 0 0 1px #111; }
 .turn-stone.white { background: #fbfcfa; box-shadow: inset 0 0 0 1px #adb4af, 0 2px 5px rgba(0,0,0,.1); }
+.turn-stone.red { background: #b43e35; box-shadow: inset 0 0 0 1px #8e2722; }
 .turn-panel strong, .section-head strong { display: block; font-size: 15px; }
 .difficulty { padding: 4px 7px; border-radius: 4px; background: #e8f0eb; color: #215c45; font-size: 12px; }
 
@@ -198,4 +204,3 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
   .game-panel { grid-template-columns: 1fr; }
   .turn-panel, .score-panel, .seat-panel, .people-panel, .messages-panel { grid-column: 1; }
 }
-
