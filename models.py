@@ -22,6 +22,7 @@ class Visitor:
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     joined_at: float = field(default_factory=time.time)
     last_seen_at: float = field(default_factory=time.time)
+    left_at: float | None = None
     connected: bool = True
 
     def public_snapshot(self, *, is_player: bool) -> dict[str, object]:

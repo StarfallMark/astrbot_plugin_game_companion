@@ -214,6 +214,68 @@ async def test_heartbeat_does_not_refresh_meaningful_activity() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finished_room_expires_shortly_after_player_leaves() -> None:
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=300)
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    room.status = "finished"
+    visitor.left_at = 100.0
+    visitor.last_seen_at = 100.0
+
+    assert await manager.sweep_expired(now=107.9) == []
+    assert await manager.sweep_expired(now=108.0) == [room.room_id]
+    assert manager.closed_reason_by_access_token(room.access_token) == (
+        "本局结束后玩家已离开，房间已自动销毁"
+    )
+
+
+@pytest.mark.asyncio
+async def test_rejoin_cancels_finished_room_leave_expiry() -> None:
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=300)
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    room.status = "finished"
+
+    await manager.leave(room, visitor.token)
+    assert visitor.left_at is not None
+    await manager.join(room, visitor.token)
+
+    assert visitor.left_at is None
+    assert visitor.connected
+    assert await manager.sweep_expired(now=visitor.last_seen_at + 8) == []
+
+
+@pytest.mark.asyncio
+async def test_active_game_is_not_destroyed_by_browser_leave_grace() -> None:
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=300)
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    visitor.left_at = 100.0
+    visitor.last_seen_at = 100.0
+    room.last_activity_at = 100.0
+
+    assert await manager.sweep_expired(now=108.0) == []
+    assert room.room_id in manager.rooms
+
+
+@pytest.mark.asyncio
+async def test_finished_room_uses_heartbeat_loss_when_leave_signal_is_missing() -> None:
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=300)
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    room.status = "finished"
+    visitor.left_at = None
+    visitor.last_seen_at = 100.0
+
+    assert await manager.sweep_expired(now=159.9) == []
+    assert await manager.sweep_expired(now=160.0) == [room.room_id]
+
+
+@pytest.mark.asyncio
 async def test_empty_and_idle_zero_disable_expiry() -> None:
     manager = RoomManager(empty_player_timeout=0, idle_timeout=0)
     room = await create_room(manager)

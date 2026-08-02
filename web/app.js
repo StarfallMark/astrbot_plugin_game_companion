@@ -81,6 +81,21 @@
     render();
   }
 
+  function notifyLeave() {
+    if (!visitorToken) return;
+    const body = JSON.stringify({ visitor_token: visitorToken });
+    if (typeof window.navigator.sendBeacon === "function") {
+      const payload = new Blob([body], { type: "application/json" });
+      if (window.navigator.sendBeacon(endpoint("leave"), payload)) return;
+    }
+    window.fetch(endpoint("leave"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  }
+
   function setConnection(mode, label) {
     document.getElementById("connectionDot").className = `connection-dot ${mode}`;
     document.getElementById("roomStatus").textContent = label;
@@ -326,6 +341,9 @@
   });
   document.getElementById("seatAction").addEventListener("click", seatAction);
   board.addEventListener("click", moveAt);
+  window.addEventListener("pagehide", (event) => {
+    if (!event.persisted) notifyLeave();
+  });
   icons();
   join()
     .then(() => { setConnection("online", "已连接"); pollTimer = window.setTimeout(poll, 1000); })

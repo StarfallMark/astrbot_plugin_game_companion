@@ -110,3 +110,33 @@ async def test_expired_room_api_returns_structured_close_reason() -> None:
 
     assert response.status == 410
     assert payload == {"status": "error", "message": "房间测试关闭"}
+
+
+@pytest.mark.asyncio
+async def test_same_origin_leave_beacon_records_browser_departure() -> None:
+    server = make_server(0)
+    room = await server.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        difficulty="normal",
+    )
+    visitor = await server.manager.join(room)
+
+    app = server._build_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            f"/api/room/{room.access_token}/leave",
+            json={"visitor_token": visitor.token},
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload == {"status": "ok", "data": {"left": True}}
+    assert not visitor.connected
+    assert visitor.left_at is not None

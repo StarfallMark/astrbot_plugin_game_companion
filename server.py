@@ -93,6 +93,7 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/start", self._start_game)
         app.router.add_post("/api/room/{access_token}/move", self._move)
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
+        app.router.add_post("/api/room/{access_token}/leave", self._leave)
         return app
 
     async def stop(self) -> None:
@@ -194,6 +195,13 @@ class GameRoomServer:
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.request_rematch(room, visitor_token)
         return self._response({"room": room.public_snapshot(visitor_token)})
+
+    async def _leave(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        await self.manager.leave(room, str(payload.get("visitor_token") or ""))
+        return self._response({"left": True})
 
     @web.middleware
     async def _error_middleware(

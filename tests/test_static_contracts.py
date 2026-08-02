@@ -66,3 +66,14 @@ def test_natural_language_rematch_is_routed_to_the_existing_room() -> None:
     assert 'elif action == "rematch"' in source
     assert "restart_finished_game" in source
     assert "绝不能 close 后调用创建工具" in source
+
+
+def test_browser_reports_departure_with_heartbeat_fallback() -> None:
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert 'window.addEventListener("pagehide"' in script
+    assert "window.navigator.sendBeacon" in script
+    assert 'endpoint("leave")' in script
+    assert "FINISHED_PLAYER_LEAVE_GRACE_SECONDS = 8" in manager
+    assert "FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS = 60" in manager

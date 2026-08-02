@@ -17,6 +17,8 @@ class RoomManager:
 
     CLOSED_ACCESS_TTL_SECONDS = 15 * 60
     MAX_CLOSED_ACCESS_RECORDS = 256
+    FINISHED_PLAYER_LEAVE_GRACE_SECONDS = 8
+    FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS = 60
 
     def __init__(
         self,
@@ -103,6 +105,7 @@ class RoomManager:
                 room.visitors[visitor.token] = visitor
             visitor.connected = True
             visitor.last_seen_at = time.time()
+            visitor.left_at = None
             return visitor
 
     async def heartbeat(self, room: GameRoom, visitor_token: str) -> None:
@@ -111,6 +114,14 @@ class RoomManager:
             visitor = self._visitor(room, visitor_token)
             visitor.connected = True
             visitor.last_seen_at = time.time()
+            visitor.left_at = None
+
+    async def leave(self, room: GameRoom, visitor_token: str) -> None:
+        """Record a browser departure without extending meaningful activity."""
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            visitor.connected = False
+            visitor.left_at = time.time()
 
     async def claim_and_start(
         self, room: GameRoom, visitor_token: str, side: str
@@ -383,6 +394,22 @@ class RoomManager:
         current = time.time() if now is None else float(now)
         expired: list[tuple[str, str]] = []
         for room in list(self.rooms.values()):
+            player = room.player
+            if room.status == "finished" and player is not None:
+                explicitly_left = (
+                    player.left_at is not None
+                    and current - player.left_at
+                    >= self.FINISHED_PLAYER_LEAVE_GRACE_SECONDS
+                )
+                heartbeat_lost = (
+                    current - player.last_seen_at
+                    >= self.FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS
+                )
+                if explicitly_left or heartbeat_lost:
+                    expired.append(
+                        (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
+                    )
+                    continue
             if (
                 self.empty_player_timeout
                 and room.player_empty_since is not None
