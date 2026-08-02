@@ -71,10 +71,16 @@ def test_management_page_can_switch_games_and_install_engine() -> None:
     script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(
         encoding="utf-8"
     )
+    page = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(
+        encoding="utf-8"
+    )
 
     assert 'action: "switch_game"' in script
     assert "confirm_abandon: active" in script
     assert 'endpoint("POST", "xiangqi/install")' in script
+    assert "window.confirm" not in script
+    assert 'id="confirmDialog"' in page
+    assert "confirmAction" in script
 
 
 def test_room_expiry_does_not_stop_the_shared_access_channel() -> None:

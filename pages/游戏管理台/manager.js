@@ -4,12 +4,14 @@
   const body = document.getElementById("roomsBody");
   const emptyState = document.getElementById("emptyState");
   const assignDialog = document.getElementById("assignDialog");
+  const confirmDialog = document.getElementById("confirmDialog");
   const toast = document.getElementById("toast");
   let rooms = [];
   let tunnel = {};
   let xiangqiEngine = {};
   let toastTimer = 0;
   let refreshTimer = 0;
+  let confirmResolver = null;
 
   function icons() {
     if (window.lucide?.createIcons) window.lucide.createIcons();
@@ -20,6 +22,25 @@
     toast.textContent = message;
     toast.hidden = false;
     toastTimer = window.setTimeout(() => { toast.hidden = true; }, 2600);
+  }
+
+  function resolveConfirmation(accepted) {
+    const resolver = confirmResolver;
+    confirmResolver = null;
+    if (confirmDialog.open) confirmDialog.close();
+    if (resolver) resolver(Boolean(accepted));
+  }
+
+  function confirmAction({ title, message, label = "确认", danger = false }) {
+    if (confirmResolver) resolveConfirmation(false);
+    document.getElementById("confirmTitle").textContent = title;
+    document.getElementById("confirmMessage").textContent = message;
+    const proceed = document.getElementById("confirmProceed");
+    proceed.querySelector("span").textContent = label;
+    proceed.classList.toggle("danger", danger);
+    confirmDialog.showModal();
+    icons();
+    return new Promise((resolve) => { confirmResolver = resolve; });
   }
 
   async function bridge() {
@@ -95,7 +116,12 @@
       gameSelect.addEventListener("change", async () => {
         const target = gameSelect.value;
         const active = ["active", "paused"].includes(room.status);
-        if (active && !window.confirm("当前对局尚未结束。确认放弃本局并切换游戏？")) {
+        if (active && !await confirmAction({
+          title: "放弃当前对局",
+          message: "当前对局尚未结束。切换游戏将放弃本局，但会保留房间、玩家和比分。",
+          label: "放弃并切换",
+          danger: true,
+        })) {
           gameSelect.value = room.game_type;
           return;
         }
@@ -136,7 +162,12 @@
         kick.setAttribute("aria-label", `移出 ${visitor.number} 号`);
         kick.innerHTML = '<i data-lucide="x"></i>';
         kick.addEventListener("click", async () => {
-          if (!window.confirm(`确认将 ${visitor.number} 号移出房间？`)) return;
+          if (!await confirmAction({
+            title: "移出访客",
+            message: `确认将 ${visitor.number} 号移出房间？如果该访客正在玩家席，本局将被重置。`,
+            label: "确认移出",
+            danger: true,
+          })) return;
           try {
             await endpoint("POST", "room/action", {
               room_id: room.room_id, action: "kick", visitor_number: visitor.number,
@@ -301,7 +332,12 @@
   }
 
   async function runRoomAction(roomId, action) {
-    if (action === "close" && !window.confirm("确认关闭并销毁这个房间？")) return;
+    if (action === "close" && !await confirmAction({
+      title: "关闭房间",
+      message: "确认关闭并销毁这个房间？房间链接会立即失效，未完成的对局无法恢复。",
+      label: "关闭房间",
+      danger: true,
+    })) return;
     try {
       await endpoint("POST", "room/action", { room_id: roomId, action });
       showToast("操作已完成");
@@ -323,7 +359,11 @@
   }
 
   async function installEngine() {
-    if (!window.confirm("将通过已配置的代理下载 Pikafish 官方发行包。继续安装或更新？")) return;
+    if (!await confirmAction({
+      title: "安装中国象棋引擎",
+      message: "将通过已配置的代理下载 Pikafish 官方发行包，校验后安装到插件数据目录。",
+      label: "开始安装",
+    })) return;
     const action = document.getElementById("engineAction");
     action.disabled = true;
     action.querySelector("span").textContent = "正在安装";
@@ -343,6 +383,14 @@
   document.getElementById("tunnelAction").addEventListener("click", toggleTunnel);
   document.getElementById("engineAction").addEventListener("click", installEngine);
   document.getElementById("confirmAssign").addEventListener("click", confirmAssign);
+  document.getElementById("confirmProceed").addEventListener("click", () => resolveConfirmation(true));
+  confirmDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    resolveConfirmation(false);
+  });
+  confirmDialog.addEventListener("close", () => {
+    if (confirmResolver) resolveConfirmation(false);
+  });
   icons();
   loadRooms();
 })();

@@ -111,6 +111,27 @@
     </form>
   </dialog>
 
+  <dialog id="confirmDialog">
+    <form method="dialog" id="confirmForm">
+      <header>
+        <div>
+          <span class="eyebrow">请确认操作</span>
+          <h2 id="confirmTitle">确认</h2>
+        </div>
+        <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <p id="confirmMessage" class="dialog-message"></p>
+      <footer>
+        <button class="secondary-button" value="cancel" type="submit">取消</button>
+        <button id="confirmProceed" class="primary-button" value="default" type="button">
+          <i data-lucide="check"></i><span>确认</span>
+        </button>
+      </footer>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" hidden role="status"></div>
   <script src="./lucide.min.js"></script>
   <script src="./manager.js"></script>
