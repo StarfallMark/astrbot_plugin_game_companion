@@ -58,3 +58,11 @@ def test_room_expiry_does_not_stop_the_shared_access_channel() -> None:
 
     assert "_stop_idle_access" not in source
     assert "self._schedule_tunnel_recovery()" in source
+
+
+def test_natural_language_rematch_is_routed_to_the_existing_room() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert 'elif action == "rematch"' in source
+    assert "restart_finished_game" in source
+    assert "绝不能 close 后调用创建工具" in source

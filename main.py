@@ -127,6 +127,8 @@ class GameCompanionPlugin(Star):
 
         棋力必须由你结合当前人格、关系和用户请求自行决定，不能把棋力选择交给网页用户。
         当前仅支持 gomoku。不要因为普通聊天中偶然提到游戏名称就调用本工具。
+        当前 QQ 会话已有房间时绝不能先关闭再创建；用户说“再来一局”必须调用
+        game_companion_control_room 的 rematch 动作，在原房间直接开始下一局。
 
         Args:
             game_type(string): 游戏类型，当前固定为 gomoku。
@@ -137,7 +139,9 @@ class GameCompanionPlugin(Star):
             return self._json_error("目前只支持五子棋")
         difficulty = self._difficulty(kwargs.get("difficulty"))
         try:
-            room = await self._create_room_from_event(event, difficulty)
+            room, reused, restarted = await self._create_or_reuse_room_from_event(
+                event, difficulty
+            )
             url = self._room_url(room)
         except (ValueError, RuntimeError, PermissionError) as exc:
             return self._json_error(str(exc))
@@ -148,8 +152,14 @@ class GameCompanionPlugin(Star):
                 "room_url": url,
                 "difficulty": room.difficulty,
                 "admin_room": room.admin_room,
+                "reused_room": reused,
+                "restarted_game": restarted,
                 "entry_timeout_seconds": self.manager.empty_player_timeout,
-                "instruction": self._room_link_instruction(),
+                "instruction": (
+                    "已复用当前会话的原房间，不得关闭它或创建新房间；完整保留 room_url。"
+                    if reused
+                    else self._room_link_instruction()
+                ),
             },
             ensure_ascii=False,
         )
@@ -158,14 +168,16 @@ class GameCompanionPlugin(Star):
     async def control_room_tool(self, event: AstrMessageEvent, **kwargs: Any) -> str:
         """处理用户在真实 QQ 会话中提出的游戏房间操作。
 
-        身份确认、抢占纠正、悔棋、暂停、继续、认输和结束房间必须使用本工具，不能仅口头答应。
+        身份确认、抢占纠正、悔棋、暂停、继续、认输、再来一局和结束房间必须使用本工具，不能仅口头答应。
         悔棋是否同意由你结合人格决定，并通过 allow 表达决定。
+        用户说“再来一局”时使用 rematch，保留原房间和链接，不得先 close 再创建房间。
 
         Args:
-            action(string): status、confirm_player、correct_player、undo、pause、resume、resign、close。
+            action(string): status、confirm_player、correct_player、undo、pause、resume、resign、rematch、close。
             room_id(string): 可选房间编号；当前会话只有一个房间时可以留空。
             visitor_number(number): correct_player 时创建者声明的浏览器序号。
             allow(boolean): undo 时你是否同意悔棋。
+            difficulty(string): rematch 时你根据人格决定的新棋力，只能是 easy、normal、hard。
         """
         action = str(kwargs.get("action") or "status").strip().lower()
         actor_qq = str(event.get_sender_id() or "").strip()
@@ -210,6 +222,26 @@ class GameCompanionPlugin(Star):
                 if not authorized:
                     raise PermissionError("只有房主或当前玩家能认输")
                 await self.manager.resign(room)
+            elif action == "rematch":
+                if not authorized:
+                    raise PermissionError("只有房主、当前玩家或游戏管理员能开始下一局")
+                await self.manager.restart_finished_game(
+                    room,
+                    difficulty=self._difficulty(
+                        kwargs.get("difficulty") or room.difficulty
+                    ),
+                )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "action": action,
+                        "room_id": room.room_id,
+                        "room_url": self._room_url(room),
+                        "difficulty": room.difficulty,
+                        "instruction": "下一局已在原房间直接开始；不得关闭房间或创建新链接。",
+                    },
+                    ensure_ascii=False,
+                )
             elif action == "close":
                 if not authorized:
                     raise PermissionError("没有关闭该房间的权限")
@@ -260,7 +292,8 @@ class GameCompanionPlugin(Star):
                 )
             )
         lines.append(
-            "涉及身份、悔棋、暂停、认输或结束时调用 game_companion_control_room；普通闲聊照常回答。"
+            "涉及身份、悔棋、暂停、认输、再来一局或结束时调用 game_companion_control_room；"
+            "再来一局必须使用 rematch 并保留原房间，绝不能 close 后调用创建工具；普通闲聊照常回答。"
         )
         lines.append("</game_companion_context>")
         req.system_prompt = (
@@ -297,6 +330,28 @@ class GameCompanionPlugin(Star):
             difficulty=difficulty,
         )
         return room
+
+    async def _create_or_reuse_room_from_event(
+        self, event: AstrMessageEvent, difficulty: Difficulty
+    ) -> tuple[GameRoom, bool, bool]:
+        rooms = self.manager.for_session(event.unified_msg_origin)
+        if len(rooms) > 1:
+            raise ValueError("当前会话已有多个活动房间，请先说明要使用的房间编号")
+        if not rooms:
+            room = await self._create_room_from_event(event, difficulty)
+            return room, False, False
+        room = rooms[0]
+        restarted = False
+        actor_qq = str(event.get_sender_id() or "").strip()
+        authorized = (
+            actor_qq in {room.creator_qq, room.player_qq}
+            or actor_qq in self.game_admin_ids
+        )
+        if room.status in {"finished", "rematch_pending"} and authorized:
+            await self.manager.restart_finished_game(room, difficulty=difficulty)
+            restarted = True
+        await self._ensure_public_access()
+        return room, True, restarted
 
     async def _ensure_public_access(self) -> None:
         if not self.room_server.running:
@@ -433,8 +488,14 @@ class GameCompanionPlugin(Star):
             break
         if room.room_id not in self.manager.rooms:
             return
-        room.difficulty = difficulty
-        await self.manager.resolve_rematch(room, accepted=accept, message=reply)
+        applied = await self.manager.resolve_rematch(
+            room,
+            accepted=accept,
+            message=reply,
+            difficulty=difficulty,
+        )
+        if not applied:
+            return
         await self._sync_conversation_pair(room, "[游戏事件] 玩家申请再来一局。", reply)
         await self._send_to_origin(room, reply)
 

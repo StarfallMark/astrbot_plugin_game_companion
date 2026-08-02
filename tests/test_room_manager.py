@@ -119,6 +119,79 @@ async def test_identity_confirmation_emits_only_after_real_qq_confirmation() -> 
 
 
 @pytest.mark.asyncio
+async def test_rematch_reuses_room_player_identity_score_and_side() -> None:
+    manager = RoomManager()
+    room = await create_room(manager, source="private", creator="10001")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.confirm_creator(room, "10001")
+    original_room_id = room.room_id
+    original_access_token = room.access_token
+    original_player_token = room.player_token
+    original_human_color = room.game.human_color
+    room.status = "finished"
+    room.completed_games = 2
+    room.human_wins = 1
+    room.bot_wins = 1
+
+    await manager.restart_finished_game(room, difficulty="hard")
+
+    assert room.room_id == original_room_id
+    assert room.access_token == original_access_token
+    assert room.player_token == original_player_token
+    assert room.player_identity_confirmed
+    assert room.completed_games == 2
+    assert room.human_wins == 1
+    assert room.bot_wins == 1
+    assert room.status == "active"
+    assert room.difficulty == "hard"
+    assert room.game is not None
+    assert room.game.human_color == original_human_color
+    assert room.game.history == []
+
+
+@pytest.mark.asyncio
+async def test_rematch_does_not_reset_an_unfinished_game() -> None:
+    manager = RoomManager()
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    game = room.game
+
+    with pytest.raises(ValueError, match="尚未结束"):
+        await manager.restart_finished_game(room, difficulty="easy")
+
+    assert room.game is game
+    assert room.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_stale_web_rematch_decision_cannot_override_a_qq_restart() -> None:
+    manager = RoomManager()
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    room.status = "rematch_pending"
+
+    await manager.restart_finished_game(room, difficulty="hard")
+    active_game = room.game
+    applied = await manager.resolve_rematch(
+        room,
+        accepted=True,
+        message="迟到的网页决议",
+        difficulty="easy",
+    )
+
+    assert not applied
+    assert room.status == "active"
+    assert room.game is active_game
+    assert room.difficulty == "hard"
+    assert all(
+        message["content"] != "迟到的网页决议" for message in room.messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_non_creator_cannot_correct_identity() -> None:
     manager = RoomManager()
     room = await create_room(manager, creator="10001")

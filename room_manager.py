@@ -244,21 +244,51 @@ class RoomManager:
         await self._emit("rematch_requested", room, {})
 
     async def resolve_rematch(
-        self, room: GameRoom, *, accepted: bool, message: str = ""
-    ) -> None:
-        """Apply the Bot's rematch decision."""
+        self,
+        room: GameRoom,
+        *,
+        accepted: bool,
+        message: str = "",
+        difficulty: Difficulty | None = None,
+    ) -> bool:
+        """Apply a pending Bot decision and reject stale concurrent decisions."""
         async with room.lock:
             if room.status != "rematch_pending":
-                return
+                return False
             if message:
                 room.add_message("bot", message)
             if accepted:
+                if difficulty is not None:
+                    room.difficulty = difficulty
                 room.game = None
                 room.status = "setup"
                 room.touch()
-                return
+                return True
         if not accepted:
             await self.destroy(room.room_id, "Bot 没有接受再来一局")
+        return True
+
+    async def restart_finished_game(
+        self, room: GameRoom, *, difficulty: Difficulty
+    ) -> None:
+        """Start another game in the same room, preserving its player and score."""
+        async with room.lock:
+            if not room.player_token or room.player is None:
+                raise ValueError("当前房间没有可以继续对局的玩家")
+            if room.status not in {"finished", "rematch_pending"} or room.game is None:
+                raise ValueError("当前对局尚未结束，不能直接再来一局")
+            human_color = room.game.human_color
+            room.difficulty = difficulty
+            room.game = GomokuGame(human_color=human_color, difficulty=difficulty)
+            room.status = "active"
+            room.touch()
+            room.add_message(
+                "system",
+                f"新对局开始，玩家继续执{'黑' if human_color == BLACK else '白'}，Bot 使用{self._difficulty_label(difficulty)}棋力。",
+            )
+        await self._emit("game_started", room, {"rematch": True})
+        if room.game and room.game.turn == room.game.bot_color:
+            await self._bot_turn(room)
 
     async def undo(self, room: GameRoom) -> int:
         """Undo the latest complete player round after a QQ-side decision."""
