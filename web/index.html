@@ -70,6 +70,40 @@
         </form>
       </section>
 
+      <section id="diceStage" class="dice-stage" hidden aria-label="贪心骰子">
+        <header class="dice-header">
+          <div>
+            <span class="label">贪心骰子</span>
+            <h2>继续冒险，还是及时收手</h2>
+          </div>
+          <span class="difficulty">目标 <strong id="diceTarget">50</strong> 分</span>
+        </header>
+        <div class="dice-scores" aria-label="当前分数">
+          <div class="human"><span>玩家</span><strong id="diceHumanScore">0</strong></div>
+          <div class="turn-bank"><span>本回合</span><strong id="diceTurnTotal">0</strong></div>
+          <div class="bot"><span>Bot</span><strong id="diceBotScore">0</strong></div>
+        </div>
+        <div class="dice-table">
+          <div id="diceCube" class="dice-cube waiting" aria-label="尚未掷骰">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          </div>
+          <div class="dice-readout">
+            <span class="label">当前状态</span>
+            <strong id="diceStatus">等待开局</strong>
+            <span id="diceRisk">Bot 风格：均衡</span>
+          </div>
+        </div>
+        <div id="diceHistory" class="dice-history" aria-live="polite"></div>
+        <footer class="dice-actions">
+          <button id="diceRollAction" class="primary-action" type="button">
+            <i data-lucide="dice-5"></i><span>继续掷</span>
+          </button>
+          <button id="diceHoldAction" class="secondary-action" type="button">
+            <i data-lucide="hand"></i><span>收手存分</span>
+          </button>
+        </footer>
+      </section>
+
       <aside class="game-panel">
         <section class="turn-panel">
           <div class="turn-stone" id="turnStone"></div>

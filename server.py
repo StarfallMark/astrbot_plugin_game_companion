@@ -92,7 +92,10 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/claim", self._claim)
         app.router.add_post("/api/room/{access_token}/start", self._start_game)
         app.router.add_post("/api/room/{access_token}/move", self._move)
-        app.router.add_post("/api/room/{access_token}/soup/question", self._soup_question)
+        app.router.add_post("/api/room/{access_token}/dice/action", self._dice_action)
+        app.router.add_post(
+            "/api/room/{access_token}/soup/question", self._soup_question
+        )
         app.router.add_post("/api/room/{access_token}/soup/answer", self._soup_answer)
         app.router.add_post("/api/room/{access_token}/soup/hint", self._soup_hint)
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
@@ -203,6 +206,16 @@ class GameRoomServer:
         await self.manager.request_rematch(room, visitor_token)
         return self._response({"room": room.public_snapshot(visitor_token)})
 
+    async def _dice_action(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        await self.manager.player_dice_action(
+            room, visitor_token, str(payload.get("action") or "")
+        )
+        return self._response({"room": room.public_snapshot(visitor_token)})
+
     async def _soup_question(self, request: web.Request) -> web.Response:
         self._require_origin(request)
         room = self._room(request)
@@ -214,9 +227,7 @@ class GameRoomServer:
             source="web",
             visitor_token=visitor_token,
         )
-        return self._response(
-            {**result, "room": room.public_snapshot(visitor_token)}
-        )
+        return self._response({**result, "room": room.public_snapshot(visitor_token)})
 
     async def _soup_answer(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -229,9 +240,7 @@ class GameRoomServer:
             source="web",
             visitor_token=visitor_token,
         )
-        return self._response(
-            {**result, "room": room.public_snapshot(visitor_token)}
-        )
+        return self._response({**result, "room": room.public_snapshot(visitor_token)})
 
     async def _soup_hint(self, request: web.Request) -> web.Response:
         self._require_origin(request)

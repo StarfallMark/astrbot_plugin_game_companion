@@ -8,6 +8,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from astrbot_plugin_game_companion.room_manager import RoomManager
+from astrbot_plugin_game_companion.pig_dice import PigDiceGame
 from astrbot_plugin_game_companion.server import GameRoomServer
 
 
@@ -218,3 +219,42 @@ async def test_tictactoe_move_endpoint_accepts_cell_coordinates() -> None:
     game = payload["data"]["room"]["game"]
     assert game["board"][1][1] == 1
     assert game["move_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_pig_dice_endpoint_never_accepts_a_client_supplied_roll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "astrbot_plugin_game_companion.pig_dice.secrets.randbelow", lambda _n: 4
+    )
+    server = make_server(0)
+    room = await server.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="pig_dice",
+        difficulty="normal",
+    )
+    visitor = await server.manager.join(room)
+    room.player_token = visitor.token
+    room.status = "active"
+    room.game = PigDiceGame(turn="human")
+
+    app = server._build_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            f"/api/room/{room.access_token}/dice/action",
+            json={"visitor_token": visitor.token, "action": "roll", "value": 6},
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    game = payload["data"]["room"]["game"]
+    assert game["last_roll"] == 5
+    assert game["turn_total"] == 5

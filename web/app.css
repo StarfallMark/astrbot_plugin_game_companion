@@ -213,6 +213,106 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
 }
 .secondary-action svg { width: 17px; }
 .primary-action.compact { width: auto; min-width: 108px; padding: 0 16px; }
+.dice-stage {
+  width: 100%;
+  min-height: 660px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #c8cfca;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #f8faf8;
+  box-shadow: 0 12px 28px rgba(35, 43, 38, .09);
+}
+.dice-stage[hidden] { display: none; }
+.dice-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 24px 26px 18px;
+  border-bottom: 1px solid #dce2dd;
+  background: #fff;
+}
+.dice-header h2 { margin: 3px 0 0; font-size: 24px; line-height: 1.25; }
+.dice-scores {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-bottom: 1px solid #dce2dd;
+  background: #fff;
+}
+.dice-scores div { padding: 15px 20px; text-align: center; }
+.dice-scores div + div { border-left: 1px solid #e1e5e2; }
+.dice-scores span { display: block; color: #69726c; font-size: 12px; }
+.dice-scores strong { display: block; margin-top: 2px; font-size: 28px; }
+.dice-scores .human strong { color: #1f6d51; }
+.dice-scores .turn-bank { background: #faf5e5; }
+.dice-scores .turn-bank strong { color: #91701b; }
+.dice-scores .bot strong { color: #9b4036; }
+.dice-table {
+  min-height: 245px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 38px;
+  padding: 28px 24px 22px;
+}
+.dice-cube {
+  width: 150px;
+  height: 150px;
+  flex: 0 0 150px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  place-items: center;
+  border: 2px solid #29342e;
+  border-radius: 18px;
+  padding: 18px;
+  background: #fff;
+  box-shadow: 0 10px 0 #d5dad6, 0 16px 24px rgba(38, 48, 42, .16);
+  transform-origin: center;
+}
+.dice-cube i { width: 19px; height: 19px; border-radius: 50%; background: #29342e; opacity: 0; }
+.dice-cube.value-1 i:nth-child(5),
+.dice-cube.value-2 i:nth-child(1), .dice-cube.value-2 i:nth-child(9),
+.dice-cube.value-3 i:nth-child(1), .dice-cube.value-3 i:nth-child(5), .dice-cube.value-3 i:nth-child(9),
+.dice-cube.value-4 i:nth-child(1), .dice-cube.value-4 i:nth-child(3), .dice-cube.value-4 i:nth-child(7), .dice-cube.value-4 i:nth-child(9),
+.dice-cube.value-5 i:nth-child(1), .dice-cube.value-5 i:nth-child(3), .dice-cube.value-5 i:nth-child(5), .dice-cube.value-5 i:nth-child(7), .dice-cube.value-5 i:nth-child(9),
+.dice-cube.value-6 i:nth-child(1), .dice-cube.value-6 i:nth-child(3), .dice-cube.value-6 i:nth-child(4), .dice-cube.value-6 i:nth-child(6), .dice-cube.value-6 i:nth-child(7), .dice-cube.value-6 i:nth-child(9) { opacity: 1; }
+.dice-cube.waiting::after { content: "?"; grid-area: 1 / 1 / 4 / 4; color: #8a938d; font-size: 62px; font-weight: 700; }
+.dice-cube.is-rolling { animation: dice-pop .42s ease-out; }
+@keyframes dice-pop {
+  0% { transform: rotate(-7deg) scale(.88); }
+  55% { transform: rotate(5deg) scale(1.06); }
+  100% { transform: rotate(0) scale(1); }
+}
+.dice-readout { min-width: 190px; display: grid; gap: 5px; }
+.dice-readout strong { font-size: 22px; }
+.dice-readout > span:last-child { color: #6a746e; font-size: 13px; }
+.dice-history {
+  flex: 1;
+  min-height: 145px;
+  max-height: 210px;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  margin: 0 26px 18px;
+  overflow: auto;
+}
+.dice-event { border-left: 3px solid #7e8982; padding: 7px 10px; background: #eef1ef; color: #48524c; font-size: 13px; }
+.dice-event.human { border-color: #2d765b; background: #edf4f0; }
+.dice-event.bot { border-color: #a34b40; background: #f7efed; }
+.dice-event.bust { border-color: #b4861e; background: #faf4df; color: #67541e; }
+.dice-empty { margin: auto; color: #89928c; font-size: 13px; }
+.dice-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  border-top: 1px solid #dce2dd;
+  padding: 16px 26px 22px;
+  background: #fff;
+}
+.dice-actions .secondary-action { width: 100%; min-height: 40px; }
 .board-overlay {
   position: absolute;
   inset: 0;
@@ -325,6 +425,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
   .game-layout { grid-template-columns: 1fr; gap: 14px; }
   .board-stage { max-width: 680px; }
   .soup-stage { min-height: 600px; }
+  .dice-stage { min-height: 600px; }
   .game-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .turn-panel, .score-panel { grid-column: span 1; }
   .seat-panel, .people-panel, .messages-panel { grid-column: 1 / -1; }
@@ -347,6 +448,17 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
   .soup-history { margin: 0 16px; max-height: 300px; }
   .soup-solution { margin: 0 16px 15px; }
   .soup-composer { padding: 14px 16px 18px; }
+  .dice-stage { min-height: calc(100vh - 96px); border-radius: 3px; }
+  .dice-header { padding: 18px 16px 14px; }
+  .dice-header h2 { font-size: 20px; }
+  .dice-scores div { padding: 12px 8px; }
+  .dice-table { min-height: 225px; gap: 22px; padding: 22px 16px 18px; }
+  .dice-cube { width: 124px; height: 124px; flex-basis: 124px; padding: 15px; }
+  .dice-cube i { width: 16px; height: 16px; }
+  .dice-readout { min-width: 0; }
+  .dice-readout strong { font-size: 19px; }
+  .dice-history { margin: 0 16px 15px; }
+  .dice-actions { padding: 14px 16px 18px; }
   .game-panel { grid-template-columns: 1fr; }
   .turn-panel, .score-panel, .seat-panel, .people-panel, .messages-panel { grid-column: 1; }
 }

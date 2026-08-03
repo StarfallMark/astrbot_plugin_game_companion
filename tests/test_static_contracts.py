@@ -31,7 +31,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.1.3"
+    assert metadata["version"] == "0.1.4"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -89,12 +89,8 @@ def test_tictactoe_webui_has_three_by_three_board_and_optimistic_move() -> None:
 
 
 def test_management_page_can_switch_games_and_install_engine() -> None:
-    script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(
-        encoding="utf-8"
-    )
-    page = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(
-        encoding="utf-8"
-    )
+    script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+    page = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(encoding="utf-8")
 
     assert 'action: "switch_game"' in script
     assert '["tictactoe", "井字棋"]' in script
@@ -116,7 +112,7 @@ def test_turtle_soup_webui_has_no_game_switcher_and_keeps_failed_input() -> None
     assert 'id="soupSolution"' in page
     assert 'request("POST", action, { visitor_token: visitorToken, text })' in script
     assert 'request("POST", "soup/hint"' in script
-    assert 'sideChoice.hidden = room.game_type === "turtle_soup"' in script
+    assert '["turtle_soup", "pig_dice"].includes(room.game_type)' in script
     assert ".side-choice[hidden] { display: none; }" in styles
     assert 'soupInput.value = "";' in script
     failure_branch = script.index('showToast(error?.message || "Bot 暂时无法判断")')
@@ -141,6 +137,20 @@ def test_natural_language_rematch_is_routed_to_the_existing_room() -> None:
     assert "绝不能 close 后调用创建工具" in source
 
 
+def test_pig_dice_webui_and_qq_menu_are_registered() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    manager = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+
+    assert '@filter.command_group("game")' in source
+    assert '@game_commands.command("游戏菜单"' in source
+    assert '"贪心骰子": "pig_dice"' in source
+    assert 'id="diceStage"' in page
+    assert 'request("POST", "dice/action"' in script
+    assert '["pig_dice", "贪心骰子"]' in manager
+
+
 def test_tictactoe_is_available_to_natural_language_tools() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
 
@@ -154,7 +164,7 @@ def test_room_link_is_delivered_outside_model_rewrite_with_fallback() -> None:
 
     assert "link_delivered = await self._deliver_room_link" in source
     assert '"room_url": "" if link_delivered else url' in source
-    assert "MessageChain([Plain(\"\\n\".join(lines))])" in source
+    assert 'MessageChain([Plain("\\n".join(lines))])' in source
     assert "将交由模型回复回退" in source
 
 

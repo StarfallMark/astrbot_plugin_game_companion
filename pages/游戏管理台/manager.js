@@ -111,6 +111,7 @@
         ["xiangqi", "中国象棋"],
         ["tictactoe", "井字棋"],
         ["turtle_soup", "海龟汤"],
+        ["pig_dice", "贪心骰子"],
       ].forEach(([value, label]) => {
         const option = document.createElement("option");
         option.value = value;
@@ -199,6 +200,13 @@
           ? "出题中"
           : (progress?.processing ? "判断中" : `提问 ${progress?.question_count || 0} · 提示 ${progress?.hints_used || 0}`);
         state.append(createText("small", `难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${phase}`));
+      } else if (room.game_type === "pig_dice") {
+        const progress = room.pig_dice_progress;
+        const style = { cautious: "稳健", balanced: "均衡", bold: "大胆" }[progress?.risk_style] || "均衡";
+        const score = progress
+          ? `玩家 ${progress.human_score} · Bot ${progress.bot_score} · 本回合 ${progress.turn_total}`
+          : "等待开局";
+        state.append(createText("small", `风格：${style} · ${score}`));
       } else {
         state.append(createText("small", `棋力：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"}`));
       }

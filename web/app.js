@@ -7,6 +7,7 @@
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
   const soupStage = document.getElementById("soupStage");
+  const diceStage = document.getElementById("diceStage");
   const soupInput = document.getElementById("soupInput");
   const context = board.getContext("2d");
   const toast = document.getElementById("toast");
@@ -20,6 +21,7 @@
   let pendingMove = null;
   let pendingSoup = null;
   let soupMode = "ask";
+  let renderedDiceSequence = 0;
 
   function icons() {
     if (window.lucide?.createIcons) window.lucide.createIcons();
@@ -67,7 +69,8 @@
     try {
       await loadState();
       setConnection("online", "已连接");
-      pollTimer = window.setTimeout(poll, 1000);
+      const interval = room?.game_type === "pig_dice" && room.game?.turn === "bot" ? 300 : 1000;
+      pollTimer = window.setTimeout(poll, interval);
     } catch (error) {
       setConnection("error", "连接中断");
       document.getElementById("overlayTitle").textContent = "房间不可用";
@@ -129,6 +132,7 @@
       xiangqi: "中国象棋",
       tictactoe: "井字棋",
       turtle_soup: "海龟汤",
+      pig_dice: "贪心骰子",
     }[room?.game_type] || "棋类游戏";
   }
 
@@ -137,14 +141,16 @@
     const xiangqi = room.game_type === "xiangqi";
     const tictactoe = room.game_type === "tictactoe";
     const turtleSoup = room.game_type === "turtle_soup";
+    const pigDice = room.game_type === "pig_dice";
     document.title = `游戏伴侣 · ${gameLabel()}`;
     document.getElementById("gameTitle").textContent = gameLabel();
     document.getElementById("brandIcon").setAttribute(
       "data-lucide",
-      turtleSoup ? "shell" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")),
+      turtleSoup ? "shell" : (pigDice ? "dice-5" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3"))),
     );
-    boardStage.hidden = turtleSoup;
+    boardStage.hidden = turtleSoup || pigDice;
     soupStage.hidden = !turtleSoup;
+    diceStage.hidden = !pigDice;
     boardStage.classList.toggle("xiangqi", xiangqi);
     boardStage.classList.toggle("tictactoe", tictactoe);
     board.width = xiangqi ? 720 : 760;
@@ -153,6 +159,8 @@
       "aria-label",
       turtleSoup
         ? "海龟汤问答区"
+        : pigDice
+        ? "贪心骰子操作区"
         : xiangqi
         ? "九乘十中国象棋棋盘"
         : (tictactoe ? "三乘三井字棋棋盘" : "十五乘十五五子棋棋盘"),
@@ -178,19 +186,23 @@
     document.getElementById("roomId").textContent = room.room_id || "";
     document.getElementById("roomStatus").textContent = statusLabel(room.status);
     document.getElementById("visitorLabel").textContent = room.visitor_number ? `${room.visitor_number} 号` : "访客";
-    document.getElementById("difficulty").textContent = difficultyLabel(room.difficulty);
+    const pigDice = room.game_type === "pig_dice";
+    document.getElementById("difficulty").textContent = pigDice
+      ? ({ easy: "稳健", normal: "均衡", hard: "大胆" }[room.difficulty] || "均衡")
+      : difficultyLabel(room.difficulty);
     document.getElementById("humanScore").textContent = room.score?.human ?? 0;
     document.getElementById("botScore").textContent = room.score?.bot ?? 0;
     document.getElementById("drawScore").textContent = room.score?.draws ?? 0;
     const turtleSoup = room.game_type === "turtle_soup";
     document.getElementById("humanScoreLabel").textContent = turtleSoup ? "解开" : "玩家";
-    document.getElementById("drawScoreLabel").textContent = turtleSoup ? "总题数" : "平局";
+    document.getElementById("drawScoreLabel").textContent = turtleSoup ? "总题数" : (pigDice ? "总局数" : "平局");
     document.getElementById("botScoreLabel").textContent = turtleSoup ? "放弃" : "Bot";
-    if (turtleSoup) document.getElementById("drawScore").textContent = room.score?.games ?? 0;
+    if (turtleSoup || pigDice) document.getElementById("drawScore").textContent = room.score?.games ?? 0;
     renderSeat();
     renderPeople();
     renderMessages();
     renderTurtleSoup();
+    renderPigDice();
     drawBoard();
     renderTurn();
     icons();
@@ -203,7 +215,7 @@
     const sideChoice = document.getElementById("sideChoice");
     badge.textContent = room.is_player ? "玩家席" : "观众席";
     badge.className = `seat-badge ${room.is_player ? "player" : ""}`;
-    sideChoice.hidden = room.game_type === "turtle_soup" || !(["waiting", "setup", "finished"].includes(room.status));
+    sideChoice.hidden = ["turtle_soup", "pig_dice"].includes(room.game_type) || !(["waiting", "setup", "finished"].includes(room.status));
     action.hidden = false;
     action.disabled = busy;
     if (!room.is_player && room.admin_room) {
@@ -217,6 +229,8 @@
     } else if (room.status === "setup") {
       action.innerHTML = room.game_type === "turtle_soup"
         ? '<i data-lucide="sparkles"></i><span>开始出题</span>'
+        : room.game_type === "pig_dice"
+        ? '<i data-lucide="dice-5"></i><span>开始掷骰</span>'
         : '<i data-lucide="play"></i><span>开始新一局</span>';
       note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不写入长期记忆。";
     } else if (room.status === "finished") {
@@ -336,6 +350,82 @@
       : "输入一个可以用是或否回答的问题";
   }
 
+  function renderPigDice() {
+    if (room?.game_type !== "pig_dice") return;
+    const game = room.game;
+    if (!game) renderedDiceSequence = 0;
+    document.getElementById("diceTarget").textContent = game?.target_score ?? 50;
+    document.getElementById("diceHumanScore").textContent = game?.human_score ?? 0;
+    document.getElementById("diceBotScore").textContent = game?.bot_score ?? 0;
+    document.getElementById("diceTurnTotal").textContent = game?.turn_total ?? 0;
+    document.getElementById("diceRisk").textContent = `Bot 风格：${{
+      cautious: "稳健", balanced: "均衡", bold: "大胆",
+    }[game?.risk_style] || "均衡"}`;
+
+    const cube = document.getElementById("diceCube");
+    const value = Number(game?.last_roll || 0);
+    cube.className = value ? `dice-cube value-${value}` : "dice-cube waiting";
+    cube.setAttribute("aria-label", value ? `骰子点数 ${value}` : "尚未掷骰");
+    if (game?.action_count && game.action_count !== renderedDiceSequence) {
+      renderedDiceSequence = game.action_count;
+      cube.classList.add("is-rolling");
+      window.setTimeout(() => cube.classList.remove("is-rolling"), 420);
+    }
+
+    const status = document.getElementById("diceStatus");
+    if (!game) status.textContent = "等待开局";
+    else if (game.finished) status.textContent = game.winner === "human" ? "玩家获胜" : "Bot 获胜";
+    else if (room.status === "paused") status.textContent = "对局已暂停";
+    else status.textContent = game.turn === "human" ? "轮到玩家" : "Bot 正在掷骰";
+
+    const history = document.getElementById("diceHistory");
+    history.replaceChildren();
+    const entries = Array.isArray(game?.history) ? game.history.slice(-10).reverse() : [];
+    if (!entries.length) {
+      const empty = document.createElement("p");
+      empty.className = "dice-empty";
+      empty.textContent = "开局后，每次掷骰和存分都会记录在这里。";
+      history.appendChild(empty);
+    } else {
+      entries.forEach((entry) => {
+        const item = document.createElement("div");
+        item.className = `dice-event ${entry.actor || "human"} ${entry.action || "roll"}`;
+        const actor = entry.actor === "human" ? "玩家" : "Bot";
+        let text = `${actor} 掷出 ${entry.value}`;
+        if (entry.action === "bust") text = `${actor} 掷出 1，损失 ${entry.lost || 0} 分`;
+        if (entry.action === "hold") text = `${actor} 收手，存下 ${entry.banked || 0} 分`;
+        if (entry.action === "win") text = `${actor} 存下 ${entry.banked || 0} 分并获胜`;
+        if (entry.action === "resign") text = "玩家投降，本局结束";
+        item.textContent = text;
+        history.appendChild(item);
+      });
+    }
+
+    const canAct = Boolean(
+      room.is_player && room.status === "active" && game && !game.finished
+      && game.turn === "human" && !busy
+    );
+    document.getElementById("diceRollAction").disabled = !canAct;
+    document.getElementById("diceHoldAction").disabled = !canAct || !(game?.turn_total > 0);
+  }
+
+  async function diceAction(action) {
+    if (busy || room?.game_type !== "pig_dice") return;
+    busy = true;
+    renderPigDice();
+    try {
+      const data = await request("POST", "dice/action", { visitor_token: visitorToken, action });
+      room = data.room;
+      render();
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "骰子操作失败");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   async function submitSoup(event) {
     event.preventDefault();
     if (busy || room?.game_type !== "turtle_soup") return;
@@ -402,6 +492,16 @@
               : game?.phase === "ready" ? "等待提问" : statusLabel(room.status);
       return;
     }
+    if (room.game_type === "pig_dice") {
+      stone.classList.add("o");
+      stone.textContent = room.game?.last_roll || "?";
+      label.textContent = room.game?.finished
+        ? (room.game.winner === "human" ? "玩家获胜" : "Bot 获胜")
+        : room.status === "paused"
+          ? "已经暂停"
+          : room.game?.turn === "human" ? "玩家回合" : "Bot 回合";
+      return;
+    }
     if (!room.game) {
       label.textContent = statusLabel(room.status);
       return;
@@ -430,7 +530,7 @@
   }
 
   function drawBoard() {
-    if (room?.game_type === "turtle_soup") return;
+    if (["turtle_soup", "pig_dice"].includes(room?.game_type)) return;
     if (room?.game_type === "xiangqi") drawXiangqi();
     else if (room?.game_type === "tictactoe") drawTicTacToe();
     else drawGomoku();
@@ -698,6 +798,7 @@
 
   async function moveAt(event) {
     if (busy || !room?.is_player || room.status !== "active" || !room.game) return;
+    if (room.game_type === "pig_dice") return;
     if (room.game_type === "xiangqi") await moveXiangqi(event);
     else if (room.game_type === "tictactoe") await moveTicTacToe(event);
     else await moveGomoku(event);
@@ -834,6 +935,8 @@
   document.getElementById("seatAction").addEventListener("click", seatAction);
   document.getElementById("soupComposer").addEventListener("submit", submitSoup);
   document.getElementById("soupHintAction").addEventListener("click", requestSoupHint);
+  document.getElementById("diceRollAction").addEventListener("click", () => diceAction("roll"));
+  document.getElementById("diceHoldAction").addEventListener("click", () => diceAction("hold"));
   board.addEventListener("click", moveAt);
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) notifyLeave();

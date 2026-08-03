@@ -43,7 +43,7 @@ from .turtle_soup_ai import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.1.3"
+PLUGIN_VERSION = "0.1.4"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
@@ -163,15 +163,16 @@ class GameCompanionPlugin(Star):
         """仅在用户明确想和 Bot 玩游戏时创建可视化游戏房间。
 
         难度必须由你结合当前人格、关系和用户请求自行决定，不能把难度选择交给网页用户。
-        支持 gomoku（五子棋）、xiangqi（中国象棋）、tictactoe（井字棋）和 turtle_soup（海龟汤）。
+        支持 gomoku（五子棋）、xiangqi（中国象棋）、tictactoe（井字棋）、
+        turtle_soup（海龟汤）和 pig_dice（贪心骰子）。
         不要因为普通聊天中偶然提到游戏名称就调用本工具。
         当前 QQ 会话已有房间时绝不能先关闭再创建；用户说“再来一局”必须调用
         game_companion_control_room 的 rematch 动作，在原房间直接开始下一局。
         若已有另一种游戏正在进行，必须先得到用户明确同意放弃当前局，再传 confirm_abandon=true。
 
         Args:
-            game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe 或 turtle_soup。
-            difficulty(string): 你决定使用的难度，只能是 easy、normal、hard。
+            game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、turtle_soup 或 pig_dice。
+            difficulty(string): 你决定使用的难度，只能是 easy、normal、hard；贪心骰子中分别表示稳健、均衡和大胆。
             confirm_abandon(boolean): 切换游戏且当前局未结束时，用户是否已明确同意放弃本局。
         """
         try:
@@ -233,7 +234,7 @@ class GameCompanionPlugin(Star):
             visitor_number(number): correct_player 时创建者声明的浏览器序号。
             allow(boolean): undo 时你是否同意悔棋。
             difficulty(string): rematch 时你根据人格决定的新棋力，只能是 easy、normal、hard。
-            game_type(string): switch_game 时切换到 gomoku、xiangqi、tictactoe 或 turtle_soup。
+            game_type(string): switch_game 时切换到 gomoku、xiangqi、tictactoe、turtle_soup 或 pig_dice。
             confirm_abandon(boolean): 当前局未结束时，用户是否已明确同意放弃本局。
         """
         action = str(kwargs.get("action") or "status").strip().lower()
@@ -408,7 +409,7 @@ class GameCompanionPlugin(Star):
         rooms = self.manager.for_session(event.unified_msg_origin)
         if not rooms:
             yield event.plain_result(
-                "当前会话没有活动游戏房间。直接告诉我想玩五子棋、象棋、井字棋或海龟汤即可。"
+                "当前会话没有活动游戏房间。直接告诉我想玩五子棋、象棋、井字棋、海龟汤或贪心骰子即可。"
             )
             return
         labels = [
@@ -416,6 +417,43 @@ class GameCompanionPlugin(Star):
             for room in rooms
         ]
         yield event.plain_result("当前游戏房间：\n" + "\n".join(labels))
+
+    @filter.command_group("game")
+    def game_commands(self):
+        """游戏伴侣的显式 QQ 指令。"""
+        pass
+
+    @game_commands.command("游戏菜单", alias={"菜单", "menu"})
+    async def game_menu(self, event: AstrMessageEvent):
+        """列出游戏和全局房间容量。"""
+        group_count = sum(
+            room.source == "group" for room in self.manager.rooms.values()
+        )
+        private_count = sum(
+            room.source == "private" for room in self.manager.rooms.values()
+        )
+
+        def capacity(current: int, limit: int, enabled: bool) -> str:
+            maximum = "不限" if limit == 0 else str(limit)
+            state = "允许创建" if enabled else "已关闭创建"
+            return f"{current}/{maximum}（{state}）"
+
+        lines = [
+            "游戏伴侣 · 游戏菜单",
+            "",
+            "1. 五子棋：15×15 连成五子",
+            "2. 中国象棋：使用 Pikafish 引擎",
+            "3. 井字棋：三连即可获胜",
+            "4. 海龟汤：通过是非提问还原汤底",
+            "5. 贪心骰子：继续掷或收手，先到 50 分获胜",
+            "",
+            "房间容量",
+            f"群聊：{capacity(group_count, self.manager.max_group_rooms, self.group_rooms_enabled)}",
+            f"私聊：{capacity(private_count, self.manager.max_private_rooms, self.private_rooms_enabled)}",
+            "",
+            "直接用自然语言告诉 Bot 想玩哪个游戏即可。",
+        ]
+        yield event.plain_result("\n".join(lines))
 
     @filter.on_llm_request(priority=-10)
     async def inject_game_context(
@@ -430,7 +468,10 @@ class GameCompanionPlugin(Star):
             player = room.player
             game = room.game
             progress = len(game.history) if game else 0
-            progress_label = "问答数" if room.game_type == "turtle_soup" else "手数"
+            progress_label = {
+                "turtle_soup": "问答数",
+                "pig_dice": "掷骰记录",
+            }.get(room.game_type, "手数")
             lines.append(
                 "房间 {room_id}：游戏={game_type}，状态={status}，创建者QQ={creator}，玩家序号={number}，"
                 "已确认身份={confirmed}，难度={difficulty}，{progress_label}={progress}。".format(
@@ -448,6 +489,7 @@ class GameCompanionPlugin(Star):
         lines.append(
             "涉及身份、悔棋、暂停、认输、再来一局、切换游戏或结束时调用 game_companion_control_room；"
             "海龟汤中的是非提问、完整猜测和提示请求必须调用 game_companion_turtle_soup；"
+            "贪心骰子的掷骰和收手只在 WebUI 操作，不要通过 QQ 工具伪造点数；"
             "再来一局必须使用 rematch 并保留原房间，绝不能 close 后调用创建工具；普通闲聊照常回答。"
         )
         lines.append("</game_companion_context>")
@@ -516,9 +558,7 @@ class GameCompanionPlugin(Star):
         if room.game_type != game_type:
             if not authorized:
                 raise PermissionError("没有切换当前房间游戏的权限")
-            await self.manager.switch_game(
-                room, game_type, force=confirm_abandon
-            )
+            await self.manager.switch_game(room, game_type, force=confirm_abandon)
         elif room.status in {"finished", "rematch_pending"} and authorized:
             await self.manager.restart_finished_game(room, difficulty=difficulty)
             restarted = True
@@ -659,11 +699,38 @@ class GameCompanionPlugin(Star):
                 hint = str(payload.get("hint") or "")
                 self._spawn(self._announce_turtle_soup_hint(room, hint))
             return
+        if event_name == "dice_changed":
+            action = str(payload.get("action") or "")
+            actor = "玩家" if payload.get("actor") == "human" else "Bot"
+            lost = int(payload.get("lost") or 0)
+            banked = int(payload.get("banked") or 0)
+            rolls = int(payload.get("turn_rolls") or 0)
+            key_event = ""
+            if action == "bust" and lost >= 10:
+                key_event = f"{actor}掷出 1，本回合损失了 {lost} 分"
+            elif action == "roll" and rolls == 4:
+                key_event = f"{actor}已经连续成功掷了四次，仍在冒险"
+            elif action in {"hold", "win"} and banked >= 15:
+                key_event = f"{actor}一次存下了 {banked} 分"
+            if key_event and (
+                time.time() - room.last_commentary_at >= self.commentary_cooldown
+            ):
+                room.last_commentary_at = time.time()
+                self._spawn(
+                    self._comment(
+                        room,
+                        f"贪心骰子刚发生关键节点：{key_event}。请结合当前人格简短自然地回应。",
+                        history_event=f"[游戏事件] 贪心骰子：{key_event}。",
+                    )
+                )
+            return
         if event_name == "game_finished":
             if room.game_type == "turtle_soup" and isinstance(
                 room.game, TurtleSoupGame
             ):
-                result = "玩家成功解开汤底" if room.game.solved else "玩家放弃，汤底已揭晓"
+                result = (
+                    "玩家成功解开汤底" if room.game.solved else "玩家放弃，汤底已揭晓"
+                )
             else:
                 result = {
                     "human_win": "玩家获胜",
@@ -703,7 +770,8 @@ class GameCompanionPlugin(Star):
             room,
             "玩家在网页申请再来一局。请结合当前人格决定是否接受，只输出 JSON："
             '{"accept":true或false,"difficulty":"easy/normal/hard","reply":"一句自然回复"}。'
-            "如果接受，可以根据人格和此前胜负重新选择本局棋力。",
+            "如果接受，可以根据人格和此前胜负重新选择本局棋力；贪心骰子中 difficulty "
+            "分别代表稳健、均衡和大胆的风险倾向。",
         )
         accept = True
         reply = "那就再来一局。"
@@ -737,9 +805,7 @@ class GameCompanionPlugin(Star):
         ):
             await self.manager.start_game(room, room.player_token, "")
 
-    async def _prepare_turtle_soup(
-        self, room: GameRoom, game: TurtleSoupGame
-    ) -> None:
+    async def _prepare_turtle_soup(self, room: GameRoom, game: TurtleSoupGame) -> None:
         recent = list(room.turtle_soup_recent_signatures)
         persona = await self._persona_prompt()
         last_error = ""
@@ -761,9 +827,7 @@ class GameCompanionPlugin(Star):
                 data = extract_json_object(raw)
                 if data is None:
                     raise ValueError("出题结果不是有效 JSON")
-                puzzle = puzzle_from_mapping(
-                    data, content_level=game.content_level
-                )
+                puzzle = puzzle_from_mapping(data, content_level=game.content_level)
                 if puzzle.signature in set(recent):
                     raise ValueError("题目与本房间最近的主题重复")
                 check_system, check_prompt = validation_prompt(puzzle)
@@ -791,9 +855,7 @@ class GameCompanionPlugin(Star):
             content_level=game.content_level,
             excluded_signatures=set(recent),
         )
-        applied = await self.manager.complete_turtle_soup_generation(
-            room, game, puzzle
-        )
+        applied = await self.manager.complete_turtle_soup_generation(room, game, puzzle)
         if applied:
             logger.warning(
                 "[GameCompanion] Bot 出题连续失败，当前局使用内置兜底题: %s",
@@ -1022,7 +1084,11 @@ class GameCompanionPlugin(Star):
 
     async def _record_room_memory(self, room: GameRoom) -> None:
         total_completed = sum(score.completed for score in room.scores.values())
-        if not self.record_shared_experience or not room.player_identity_confirmed or total_completed < 1:
+        if (
+            not self.record_shared_experience
+            or not room.player_identity_confirmed
+            or total_completed < 1
+        ):
             return
         bridge = self._memory_bridge()
         recorder = getattr(bridge, "record_shared_experience", None) if bridge else None
@@ -1282,14 +1348,17 @@ class GameCompanionPlugin(Star):
 
     def _room_link_instruction(self, room: GameRoom) -> str:
         instruction = "最终回复必须完整保留 room_url；"
-        instruction += (
-            "说明玩家进入玩家席后由 Bot 准备题目。"
-            if room.game_type == "turtle_soup"
-            else "说明玩家进入后可选择执棋方。"
-        )
+        if room.game_type == "turtle_soup":
+            instruction += "说明玩家进入玩家席后由 Bot 准备题目。"
+        elif room.game_type == "pig_dice":
+            instruction += "说明玩家进入玩家席后直接开始，先手由系统随机决定。"
+        else:
+            instruction += "说明玩家进入后可选择执棋方。"
         timeout = self.manager.empty_player_timeout
         if timeout:
-            instruction += f"明确提醒玩家在 {timeout} 秒内进入玩家席，否则房间会自动销毁。"
+            instruction += (
+                f"明确提醒玩家在 {timeout} 秒内进入玩家席，否则房间会自动销毁。"
+            )
         return instruction
 
     def _register_page_api(self) -> None:
@@ -1477,9 +1546,15 @@ class GameCompanionPlugin(Star):
             "turtle_soup": "turtle_soup",
             "turtle-soup": "turtle_soup",
             "海龟汤": "turtle_soup",
+            "pig_dice": "pig_dice",
+            "pig-dice": "pig_dice",
+            "pig": "pig_dice",
+            "贪心骰子": "pig_dice",
+            "贪心骰": "pig_dice",
+            "骰子": "pig_dice",
         }
         if normalized not in aliases:
-            raise ValueError("目前只支持五子棋、中国象棋、井字棋和海龟汤")
+            raise ValueError("目前只支持五子棋、中国象棋、井字棋、海龟汤和贪心骰子")
         return aliases[normalized]  # type: ignore[return-value]
 
     @staticmethod
@@ -1489,6 +1564,7 @@ class GameCompanionPlugin(Star):
             "xiangqi": "中国象棋",
             "tictactoe": "井字棋",
             "turtle_soup": "海龟汤",
+            "pig_dice": "贪心骰子",
         }[game_type]
 
     @staticmethod

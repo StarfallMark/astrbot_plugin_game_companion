@@ -7,12 +7,13 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .gomoku import Difficulty, GomokuGame
+from .pig_dice import PigDiceGame
 from .tictactoe import TicTacToeGame
 from .turtle_soup import TurtleSoupGame
 from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
-GameType = Literal["gomoku", "xiangqi", "tictactoe", "turtle_soup"]
+GameType = Literal["gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice"]
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
 ]
@@ -78,13 +79,16 @@ class GameRoom:
     player_qq: str = ""
     player_identity_confirmed: bool = False
     player_seat_locked: bool = False
-    game: GomokuGame | XiangqiGame | TicTacToeGame | TurtleSoupGame | None = None
+    game: (
+        GomokuGame | XiangqiGame | TicTacToeGame | TurtleSoupGame | PigDiceGame | None
+    ) = None
     scores: dict[GameType, GameScore] = field(
         default_factory=lambda: {
             "gomoku": GameScore(),
             "xiangqi": GameScore(),
             "tictactoe": GameScore(),
             "turtle_soup": GameScore(),
+            "pig_dice": GameScore(),
         }
     )
     turtle_soup_stats: TurtleSoupStats = field(default_factory=TurtleSoupStats)
@@ -210,6 +214,7 @@ class GameRoom:
                 for game_type, score in self.scores.items()
             },
             "turtle_soup_progress": self._turtle_soup_progress(),
+            "pig_dice_progress": self._pig_dice_progress(),
             "player_number": player.number if player else None,
             "player_qq": self.player_qq,
             "player_confirmed": self.player_identity_confirmed,
@@ -233,4 +238,16 @@ class GameRoom:
             "solved": self.game.solved,
             "gave_up": self.game.gave_up,
             "content_level": self.game.content_level,
+        }
+
+    def _pig_dice_progress(self) -> dict[str, object] | None:
+        if not isinstance(self.game, PigDiceGame):
+            return None
+        return {
+            "turn": self.game.turn,
+            "human_score": self.game.human_score,
+            "bot_score": self.game.bot_score,
+            "turn_total": self.game.turn_total,
+            "target_score": self.game.target_score,
+            "risk_style": self.game.bot_risk_style,
         }
