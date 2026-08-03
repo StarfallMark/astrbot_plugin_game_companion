@@ -97,7 +97,6 @@ class GameRoom:
     close_reason: str = ""
     last_commentary_at: float = 0.0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
-    conversation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @property
     def player(self) -> Visitor | None:
@@ -142,7 +141,12 @@ class GameRoom:
     def add_message(self, role: str, content: str) -> None:
         """Append a bounded game-related message for the WebUI."""
         self.messages.append(
-            {"role": role, "content": content[:800], "at": time.time()}
+            {
+                "role": role,
+                "content": content[:800],
+                "at": time.time(),
+                "game_type": self.game_type,
+            }
         )
         del self.messages[:-30]
 

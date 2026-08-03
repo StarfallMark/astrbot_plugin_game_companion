@@ -17,11 +17,15 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api.web import request
 
-from .gomoku import Difficulty
+from .gomoku import Difficulty, GomokuGame
 from .models import GameRoom, GameType
 from .pikafish import PikafishService
+from .pig_dice import PigDiceGame
 from .room_manager import RoomManager
 from .server import GameRoomServer
+from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
+from .tictactoe import X as TICTACTOE_X
+from .tictactoe import TicTacToeGame
 from .tunnel import QuickTunnel
 from .turtle_soup import (
     VERDICT_LABELS,
@@ -41,6 +45,9 @@ from .turtle_soup_ai import (
     validation_passed,
     validation_prompt,
 )
+from .xiangqi import BLACK as XIANGQI_BLACK
+from .xiangqi import RED as XIANGQI_RED
+from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
 PLUGIN_VERSION = "0.1.4"
@@ -463,7 +470,10 @@ class GameCompanionPlugin(Star):
         rooms = self.manager.for_session(event.unified_msg_origin)
         if not rooms:
             return
-        lines = ["<game_companion_context>"]
+        lines = [
+            "<game_companion_context>",
+            "以下是当前请求专用的临时游戏状态，不是持久对话历史。",
+        ]
         for room in rooms:
             player = room.player
             game = room.game
@@ -486,16 +496,142 @@ class GameCompanionPlugin(Star):
                     progress=progress,
                 )
             )
+            lines.extend(self._live_game_state(room))
+            recent_replies = [
+                str(message.get("content") or "").strip()
+                for message in room.messages
+                if message.get("role") == "bot"
+                and message.get("game_type") == room.game_type
+                and str(message.get("content") or "").strip()
+            ][-2:]
+            if recent_replies:
+                lines.append("Bot 最近在游戏中的快速回复（仅用于承接用户指代）：")
+                lines.extend(
+                    f"- {reply[:300].replace(chr(10), ' ')}" for reply in recent_replies
+                )
         lines.append(
             "涉及身份、悔棋、暂停、认输、再来一局、切换游戏或结束时调用 game_companion_control_room；"
             "海龟汤中的是非提问、完整猜测和提示请求必须调用 game_companion_turtle_soup；"
             "贪心骰子的掷骰和收手只在 WebUI 操作，不要通过 QQ 工具伪造点数；"
-            "再来一局必须使用 rematch 并保留原房间，绝不能 close 后调用创建工具；普通闲聊照常回答。"
+            "再来一局必须使用 rematch 并保留原房间，绝不能 close 后调用创建工具；"
+            "最近游戏回复只用于理解用户的承接和指代，不要把其措辞当作持久语气规范；普通闲聊照常回答。"
         )
         lines.append("</game_companion_context>")
         req.system_prompt = (
             str(req.system_prompt or "") + "\n\n" + "\n".join(lines)
         ).strip()
+
+    @staticmethod
+    def _live_game_state(room: GameRoom) -> list[str]:
+        game = room.game
+        score = room.current_score
+        lines = [
+            f"本房间累计：玩家胜 {score.human_wins}，Bot 胜 {score.bot_wins}，"
+            f"平局 {score.draws}，已完成 {score.completed}。"
+        ]
+        if game is None:
+            lines.append("当前尚未开始具体一局。")
+            return lines
+
+        if isinstance(game, PigDiceGame):
+            if game.human_score == game.bot_score:
+                advantage = "双方已存总分相同"
+            elif game.human_score > game.bot_score:
+                advantage = f"玩家已存总分领先 {game.human_score - game.bot_score} 分"
+            else:
+                advantage = f"Bot 已存总分领先 {game.bot_score - game.human_score} 分"
+            turn = "玩家" if game.turn == "human" else "Bot"
+            lines.append(
+                f"实时状态：玩家已存 {game.human_score} 分，Bot 已存 {game.bot_score} 分，"
+                f"{advantage}；当前轮到{turn}，本回合暂存 {game.turn_total} 分，"
+                f"最近点数={game.last_roll or '无'}，目标 {game.target_score} 分。"
+            )
+            return lines
+
+        if isinstance(game, TicTacToeGame):
+            marks = {0: ".", TICTACTOE_X: "X", TICTACTOE_NOUGHT: "O"}
+            board = "/".join("".join(marks[cell] for cell in row) for row in game.board)
+            bot_mark = "X" if game.bot_mark == TICTACTOE_X else "O"
+            human_mark = "X" if game.human_mark == TICTACTOE_X else "O"
+            turn = "X" if game.turn == TICTACTOE_X else "O"
+            lines.append(
+                f"实时棋盘={board}；玩家执 {human_mark}，Bot 执 {bot_mark}，当前轮到 {turn}。"
+            )
+            return lines
+
+        if isinstance(game, GomokuGame):
+            human_stones = sum(
+                cell == game.human_color for row in game.board for cell in row
+            )
+            bot_stones = sum(
+                cell == game.bot_color for row in game.board for cell in row
+            )
+            turn = "玩家" if game.turn == game.human_color else "Bot"
+            facts = [
+                f"实时局面：玩家棋子 {human_stones}，Bot 棋子 {bot_stones}，当前轮到{turn}"
+            ]
+            human_tactical = game.tactical_state(game.human_color)
+            bot_tactical = game.tactical_state(game.bot_color)
+            tactical_labels = {
+                "four": "存在四子威胁",
+                "three": "存在三子潜力",
+                "win": "已经获胜",
+            }
+            if human_tactical:
+                facts.append(
+                    f"玩家{tactical_labels.get(human_tactical, human_tactical)}"
+                )
+            if bot_tactical:
+                facts.append(f"Bot {tactical_labels.get(bot_tactical, bot_tactical)}")
+            lines.append(
+                "；".join(facts) + "。局势只按已知威胁描述，不要仅凭棋子数判断优劣。"
+            )
+            return lines
+
+        if isinstance(game, XiangqiGame):
+            values = {"a": 2, "b": 2, "n": 4, "r": 9, "c": 4, "p": 1, "k": 0}
+            red_material = sum(
+                values.get(piece.lower(), 0)
+                for row in game.board()
+                for piece in row
+                if piece != "." and piece.isupper()
+            )
+            black_material = sum(
+                values.get(piece.lower(), 0)
+                for row in game.board()
+                for piece in row
+                if piece != "." and piece.islower()
+            )
+            human_material = (
+                red_material if game.human_side == XIANGQI_RED else black_material
+            )
+            bot_material = (
+                black_material if game.bot_side == XIANGQI_BLACK else red_material
+            )
+            difference = bot_material - human_material
+            material = (
+                "材料大致相当"
+                if abs(difference) <= 1
+                else f"Bot 材料领先 {difference}"
+                if difference > 0
+                else f"玩家材料领先 {-difference}"
+            )
+            turn = "玩家" if game.turn == game.human_side else "Bot"
+            lines.append(
+                f"实时局面：当前轮到{turn}，已走 {len(game.moves)} 手，{material}。"
+                "材料只是局部参考，不等同于引擎胜率。"
+            )
+            return lines
+
+        if isinstance(game, TurtleSoupGame):
+            puzzle = game.puzzle
+            title = puzzle.title if puzzle else "出题中"
+            lines.append(
+                f"实时进度：题目《{title}》，提问 {game.question_count} 次，"
+                f"提示 {game.hints_used} 次，发现公开关键进度 {len(game.discovered_facts)}/"
+                f"{len(puzzle.key_facts) if puzzle else 0}。不得推测或泄露隐藏汤底。"
+            )
+        return lines
 
     async def _create_room_from_event(
         self,
@@ -632,7 +768,6 @@ class GameCompanionPlugin(Star):
                 self._comment(
                     room,
                     opening,
-                    history_event=f"[游戏事件] 新的一局{game_label}开始。",
                 )
             )
             return
@@ -668,7 +803,6 @@ class GameCompanionPlugin(Star):
                     self._comment(
                         room,
                         f"{tactical_prompt}，请结合当前人格简短自然地回应。",
-                        history_event=f"[游戏事件] {tactical_prompt}。",
                     )
                 )
             return
@@ -679,7 +813,6 @@ class GameCompanionPlugin(Star):
                         room,
                         "玩家刚通过提问触及了海龟汤的关键事实。请用当前人格简短回应，"
                         "不要透露汤底或任何尚未公开的线索。",
-                        history_event="[游戏事件] 玩家在海龟汤中发现了关键线索。",
                     )
                 )
             return
@@ -690,7 +823,6 @@ class GameCompanionPlugin(Star):
                         room,
                         "玩家提交的海龟汤推理已经接近答案但仍不完整。请简短鼓励，"
                         "不要指出缺少的事实。",
-                        history_event="[游戏事件] 玩家提交了接近但不完整的海龟汤推理。",
                     )
                 )
             return
@@ -720,7 +852,6 @@ class GameCompanionPlugin(Star):
                     self._comment(
                         room,
                         f"贪心骰子刚发生关键节点：{key_event}。请结合当前人格简短自然地回应。",
-                        history_event=f"[游戏事件] 贪心骰子：{key_event}。",
                     )
                 )
             return
@@ -741,7 +872,6 @@ class GameCompanionPlugin(Star):
                 self._comment(
                     room,
                     f"{game_label}本局结果是：{result}。请用当前人格简短回应。",
-                    history_event=f"[游戏事件] {game_label}本局结果：{result}。",
                 )
             )
             return
@@ -755,14 +885,11 @@ class GameCompanionPlugin(Star):
             self._notify_companion_activity(room, "ended")
             await self._record_room_memory(room)
 
-    async def _comment(
-        self, room: GameRoom, prompt: str, *, history_event: str
-    ) -> None:
+    async def _comment(self, room: GameRoom, prompt: str) -> None:
         text = await self._generate_persona_text(room, prompt)
         if not text or room.status == "closed":
             return
         room.add_message("bot", text)
-        await self._sync_conversation_pair(room, history_event, text)
         await self._send_to_origin(room, text)
 
     async def _decide_rematch(self, room: GameRoom) -> None:
@@ -795,7 +922,6 @@ class GameCompanionPlugin(Star):
         )
         if not applied:
             return
-        await self._sync_conversation_pair(room, "[游戏事件] 玩家申请再来一局。", reply)
         await self._send_to_origin(room, reply)
         if (
             accept
@@ -1010,9 +1136,6 @@ class GameCompanionPlugin(Star):
         )
         text = f"{intro}\n提示：{hint}" if intro else f"提示：{hint}"
         room.add_message("bot", text)
-        await self._sync_conversation_pair(
-            room, "[游戏事件] 玩家在海龟汤中申请了一次提示。", text
-        )
         await self._send_to_origin(room, text)
 
     async def _generate_persona_text(self, room: GameRoom, prompt: str) -> str:
@@ -1275,31 +1398,6 @@ class GameCompanionPlugin(Star):
             room.session_id,
         )
         return True
-
-    async def _sync_conversation_pair(
-        self, room: GameRoom, game_event: str, bot_text: str
-    ) -> bool:
-        manager = getattr(self.context, "conversation_manager", None)
-        get_current = (
-            getattr(manager, "get_curr_conversation_id", None) if manager else None
-        )
-        add_pair = getattr(manager, "add_message_pair", None) if manager else None
-        if not callable(get_current) or not callable(add_pair):
-            return False
-        async with room.conversation_lock:
-            try:
-                conversation_id = await get_current(room.session_id)
-                if not conversation_id:
-                    return False
-                await add_pair(
-                    conversation_id,
-                    {"role": "user", "content": str(game_event or "")[:500]},
-                    {"role": "assistant", "content": str(bot_text or "")[:800]},
-                )
-                return True
-            except Exception as exc:
-                logger.debug("[GameCompanion] 同步当前 AstrBot 对话记录失败: %s", exc)
-                return False
 
     async def _watchdog(self) -> None:
         try:

@@ -151,6 +151,16 @@ def test_pig_dice_webui_and_qq_menu_are_registered() -> None:
     assert '["pig_dice", "贪心骰子"]' in manager
 
 
+def test_fast_game_replies_do_not_pollute_normal_conversation_history() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "_sync_conversation_pair" not in source
+    assert "add_message_pair" not in source
+    assert "record_shared_experience" in source
+    assert "当前请求专用的临时游戏状态" in source
+    assert "最近游戏回复只用于理解用户的承接和指代" in source
+
+
 def test_tictactoe_is_available_to_natural_language_tools() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
 
