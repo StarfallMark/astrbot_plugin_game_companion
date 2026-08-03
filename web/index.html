@@ -33,6 +33,43 @@
         </div>
       </div>
 
+      <section id="soupStage" class="soup-stage" hidden aria-label="海龟汤">
+        <header class="soup-header">
+          <div>
+            <span class="label">本题汤面</span>
+            <h2 id="soupTitle">正在准备题目</h2>
+          </div>
+          <span id="soupContentLevel" class="difficulty">普通</span>
+        </header>
+        <p id="soupSurface" class="soup-surface">Bot 正在构思一道新的海龟汤。</p>
+        <dl class="soup-progress">
+          <div><dt>提问</dt><dd id="soupQuestionCount">0</dd></div>
+          <div><dt>提示</dt><dd id="soupHintCount">0 / 3</dd></div>
+          <div><dt>答案尝试</dt><dd id="soupAnswerCount">0</dd></div>
+          <div><dt>关键事实</dt><dd id="soupFactCount">0 / 0</dd></div>
+        </dl>
+        <div id="soupHistory" class="soup-history" aria-live="polite"></div>
+        <section id="soupSolution" class="soup-solution" hidden>
+          <span class="label">完整汤底</span>
+          <p id="soupSolutionText"></p>
+        </section>
+        <form id="soupComposer" class="soup-composer">
+          <div class="soup-mode" role="group" aria-label="输入类型">
+            <button type="button" data-soup-mode="ask" class="is-active">提问</button>
+            <button type="button" data-soup-mode="answer">猜答案</button>
+          </div>
+          <textarea id="soupInput" rows="3" maxlength="200" placeholder="输入一个可以用是或否回答的问题"></textarea>
+          <footer>
+            <button id="soupHintAction" class="secondary-action" type="button" title="申请提示">
+              <i data-lucide="lightbulb"></i><span>提示</span>
+            </button>
+            <button id="soupSubmitAction" class="primary-action compact" type="submit">
+              <i data-lucide="send"></i><span>发送</span>
+            </button>
+          </footer>
+        </form>
+      </section>
+
       <aside class="game-panel">
         <section class="turn-panel">
           <div class="turn-stone" id="turnStone"></div>
@@ -63,9 +100,9 @@
         </section>
 
         <section class="score-panel" aria-label="房间比分">
-          <div><span>玩家</span><strong id="humanScore">0</strong></div>
-          <div><span>平局</span><strong id="drawScore">0</strong></div>
-          <div><span>Bot</span><strong id="botScore">0</strong></div>
+          <div><span id="humanScoreLabel">玩家</span><strong id="humanScore">0</strong></div>
+          <div><span id="drawScoreLabel">平局</span><strong id="drawScore">0</strong></div>
+          <div><span id="botScoreLabel">Bot</span><strong id="botScore">0</strong></div>
         </section>
 
         <section class="people-panel">

@@ -6,6 +6,8 @@
   const storageKey = `game-companion:${accessToken}:visitor`;
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
+  const soupStage = document.getElementById("soupStage");
+  const soupInput = document.getElementById("soupInput");
   const context = board.getContext("2d");
   const toast = document.getElementById("toast");
   let visitorToken = accessToken ? window.localStorage.getItem(storageKey) || "" : "";
@@ -16,6 +18,8 @@
   let toastTimer = 0;
   let busy = false;
   let pendingMove = null;
+  let pendingSoup = null;
+  let soupMode = "ask";
 
   function icons() {
     if (window.lucide?.createIcons) window.lucide.createIcons();
@@ -85,6 +89,7 @@
     if (previousType !== room?.game_type) {
       selectedPiece = null;
       pendingMove = null;
+      pendingSoup = null;
       syncGameUi();
     }
     render();
@@ -123,6 +128,7 @@
       gomoku: "五子棋",
       xiangqi: "中国象棋",
       tictactoe: "井字棋",
+      turtle_soup: "海龟汤",
     }[room?.game_type] || "棋类游戏";
   }
 
@@ -130,19 +136,24 @@
     if (!room) return;
     const xiangqi = room.game_type === "xiangqi";
     const tictactoe = room.game_type === "tictactoe";
+    const turtleSoup = room.game_type === "turtle_soup";
     document.title = `游戏伴侣 · ${gameLabel()}`;
     document.getElementById("gameTitle").textContent = gameLabel();
     document.getElementById("brandIcon").setAttribute(
       "data-lucide",
-      xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3"),
+      turtleSoup ? "shell" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")),
     );
+    boardStage.hidden = turtleSoup;
+    soupStage.hidden = !turtleSoup;
     boardStage.classList.toggle("xiangqi", xiangqi);
     boardStage.classList.toggle("tictactoe", tictactoe);
     board.width = xiangqi ? 720 : 760;
     board.height = xiangqi ? 800 : 760;
     board.setAttribute(
       "aria-label",
-      xiangqi
+      turtleSoup
+        ? "海龟汤问答区"
+        : xiangqi
         ? "九乘十中国象棋棋盘"
         : (tictactoe ? "三乘三井字棋棋盘" : "十五乘十五五子棋棋盘"),
     );
@@ -171,9 +182,15 @@
     document.getElementById("humanScore").textContent = room.score?.human ?? 0;
     document.getElementById("botScore").textContent = room.score?.bot ?? 0;
     document.getElementById("drawScore").textContent = room.score?.draws ?? 0;
+    const turtleSoup = room.game_type === "turtle_soup";
+    document.getElementById("humanScoreLabel").textContent = turtleSoup ? "解开" : "玩家";
+    document.getElementById("drawScoreLabel").textContent = turtleSoup ? "总题数" : "平局";
+    document.getElementById("botScoreLabel").textContent = turtleSoup ? "放弃" : "Bot";
+    if (turtleSoup) document.getElementById("drawScore").textContent = room.score?.games ?? 0;
     renderSeat();
     renderPeople();
     renderMessages();
+    renderTurtleSoup();
     drawBoard();
     renderTurn();
     icons();
@@ -186,7 +203,7 @@
     const sideChoice = document.getElementById("sideChoice");
     badge.textContent = room.is_player ? "玩家席" : "观众席";
     badge.className = `seat-badge ${room.is_player ? "player" : ""}`;
-    sideChoice.hidden = !(["waiting", "setup", "finished"].includes(room.status));
+    sideChoice.hidden = room.game_type === "turtle_soup" || !(["waiting", "setup", "finished"].includes(room.status));
     action.hidden = false;
     action.disabled = busy;
     if (!room.is_player && room.admin_room) {
@@ -198,10 +215,14 @@
       action.disabled = busy || Boolean(room.player_number);
       note.textContent = room.player_number ? `${room.player_number} 号正在玩家席。` : "第一个加入玩家席的人开始对局。";
     } else if (room.status === "setup") {
-      action.innerHTML = '<i data-lucide="play"></i><span>开始新一局</span>';
+      action.innerHTML = room.game_type === "turtle_soup"
+        ? '<i data-lucide="sparkles"></i><span>开始出题</span>'
+        : '<i data-lucide="play"></i><span>开始新一局</span>';
       note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不写入长期记忆。";
     } else if (room.status === "finished") {
-      action.innerHTML = '<i data-lucide="rotate-ccw"></i><span>申请再来一局</span>';
+      action.innerHTML = room.game_type === "turtle_soup"
+        ? '<i data-lucide="rotate-ccw"></i><span>申请再来一道</span>'
+        : '<i data-lucide="rotate-ccw"></i><span>申请再来一局</span>';
       note.textContent = "Bot 会结合当前人格决定是否接受。";
     } else if (room.status === "rematch_pending") {
       action.innerHTML = '<i data-lucide="loader-circle"></i><span>等待 Bot 回应</span>';
@@ -233,7 +254,9 @@
     if (!messages.length) {
       const empty = document.createElement("span");
       empty.className = "empty-message";
-      empty.textContent = "对局开始后，这里会显示关键回应。";
+      empty.textContent = room.game_type === "turtle_soup"
+        ? "关键线索和人格回应会显示在这里。"
+        : "对局开始后，这里会显示关键回应。";
       list.appendChild(empty);
       return;
     }
@@ -246,11 +269,139 @@
     list.scrollTop = list.scrollHeight;
   }
 
+  function renderTurtleSoup() {
+    if (room?.game_type !== "turtle_soup") return;
+    const game = room.game;
+    const puzzle = game?.puzzle;
+    document.getElementById("soupTitle").textContent = puzzle?.title || "正在准备题目";
+    document.getElementById("soupSurface").textContent = puzzle?.surface
+      || (game?.failure_reason ? "Bot 正在重新整理题目。" : "Bot 正在构思一道新的海龟汤。");
+    document.getElementById("soupContentLevel").textContent = {
+      all_ages: "全年龄", normal: "普通", unrestricted: "不限制",
+    }[puzzle?.content_level || game?.content_level] || "普通";
+    document.getElementById("soupQuestionCount").textContent = game?.question_count ?? 0;
+    document.getElementById("soupHintCount").textContent = `${game?.hints_used ?? 0} / ${game?.hint_limit ?? 0}`;
+    document.getElementById("soupAnswerCount").textContent = game?.answer_attempts ?? 0;
+    document.getElementById("soupFactCount").textContent = `${game?.discovered_fact_count ?? 0} / ${game?.key_fact_count ?? 0}`;
+
+    const history = document.getElementById("soupHistory");
+    history.replaceChildren();
+    const entries = Array.isArray(game?.entries) ? game.entries.slice() : [];
+    if (pendingSoup) entries.push(pendingSoup);
+    if (!entries.length) {
+      const empty = document.createElement("span");
+      empty.className = "soup-empty";
+      empty.textContent = game?.preparing ? "题目生成并校验后会显示在这里" : "还没有公开问答";
+      history.appendChild(empty);
+    } else {
+      entries.forEach((entry) => {
+        const item = document.createElement("article");
+        item.className = `soup-entry ${entry.kind || "question"} ${entry.pending ? "pending" : ""}`;
+        const prompt = document.createElement("p");
+        prompt.className = "prompt";
+        prompt.textContent = entry.kind === "hint"
+          ? "玩家申请了提示"
+          : `${entry.kind === "answer" ? "猜测" : "问题"}：${entry.prompt || ""}`;
+        const response = document.createElement("p");
+        response.className = "response";
+        response.textContent = entry.response || "Bot 判断中";
+        item.append(prompt, response);
+        history.appendChild(item);
+      });
+      history.scrollTop = history.scrollHeight;
+    }
+
+    const solution = document.getElementById("soupSolution");
+    solution.hidden = !puzzle?.solution;
+    document.getElementById("soupSolutionText").textContent = puzzle?.solution || "";
+
+    const canInteract = Boolean(
+      room.is_player && room.status === "active" && game?.phase === "ready"
+      && !game?.processing && !busy,
+    );
+    soupInput.disabled = !canInteract;
+    document.getElementById("soupSubmitAction").disabled = !canInteract;
+    const hintsExhausted = (game?.hint_limit ?? 0) <= (game?.hints_used ?? 0);
+    document.getElementById("soupHintAction").disabled = !canInteract || hintsExhausted;
+  }
+
+  function setSoupMode(mode) {
+    soupMode = mode === "answer" ? "answer" : "ask";
+    document.querySelectorAll("[data-soup-mode]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.soupMode === soupMode);
+    });
+    soupInput.maxLength = soupMode === "answer" ? 800 : 200;
+    soupInput.placeholder = soupMode === "answer"
+      ? "写下你认为完整的事件经过"
+      : "输入一个可以用是或否回答的问题";
+  }
+
+  async function submitSoup(event) {
+    event.preventDefault();
+    if (busy || room?.game_type !== "turtle_soup") return;
+    const text = soupInput.value.trim();
+    if (!text) {
+      showToast(soupMode === "answer" ? "请先写下完整推理" : "请先输入一个问题");
+      return;
+    }
+    busy = true;
+    pendingSoup = {
+      kind: soupMode === "answer" ? "answer" : "question",
+      prompt: text,
+      response: "Bot 判断中",
+      pending: true,
+    };
+    render();
+    try {
+      const action = soupMode === "answer" ? "soup/answer" : "soup/question";
+      const data = await request("POST", action, { visitor_token: visitorToken, text });
+      room = data.room;
+      soupInput.value = "";
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "Bot 暂时无法判断");
+    } finally {
+      pendingSoup = null;
+      busy = false;
+      render();
+    }
+  }
+
+  async function requestSoupHint() {
+    if (busy || room?.game_type !== "turtle_soup") return;
+    busy = true;
+    render();
+    try {
+      const data = await request("POST", "soup/hint", { visitor_token: visitorToken });
+      room = data.room;
+    } catch (error) {
+      showToast(error?.message || "暂时无法取得提示");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   function renderTurn() {
     const stone = document.getElementById("turnStone");
     const label = document.getElementById("turnLabel");
     stone.className = "turn-stone";
     stone.textContent = "";
+    if (room.game_type === "turtle_soup") {
+      stone.classList.add("o");
+      stone.textContent = "?";
+      const game = room.game;
+      label.textContent = game?.preparing
+        ? "Bot 出题中"
+        : game?.processing
+          ? "Bot 判断中"
+          : room.status === "finished"
+            ? (game?.solved ? "已经解开" : "汤底揭晓")
+            : room.status === "paused"
+              ? "已经暂停"
+              : game?.phase === "ready" ? "等待提问" : statusLabel(room.status);
+      return;
+    }
     if (!room.game) {
       label.textContent = statusLabel(room.status);
       return;
@@ -279,6 +430,7 @@
   }
 
   function drawBoard() {
+    if (room?.game_type === "turtle_soup") return;
     if (room?.game_type === "xiangqi") drawXiangqi();
     else if (room?.game_type === "tictactoe") drawTicTacToe();
     else drawGomoku();
@@ -676,11 +828,17 @@
       });
     });
   });
+  document.querySelectorAll("[data-soup-mode]").forEach((button) => {
+    button.addEventListener("click", () => setSoupMode(button.dataset.soupMode));
+  });
   document.getElementById("seatAction").addEventListener("click", seatAction);
+  document.getElementById("soupComposer").addEventListener("submit", submitSoup);
+  document.getElementById("soupHintAction").addEventListener("click", requestSoupHint);
   board.addEventListener("click", moveAt);
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) notifyLeave();
   });
+  setSoupMode("ask");
   icons();
   join()
     .then(() => { setConnection("online", "已连接"); pollTimer = window.setTimeout(poll, 1000); })

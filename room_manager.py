@@ -4,7 +4,7 @@ import asyncio
 import secrets
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 from .gomoku import BLACK, WHITE, Difficulty, GomokuGame
 from .models import GameRoom, GameType, RoomSource, Visitor
@@ -12,6 +12,13 @@ from .pikafish import PikafishService
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import X as TICTACTOE_X
 from .tictactoe import TicTacToeGame
+from .turtle_soup import (
+    SoupContentLevel,
+    SoupPuzzle,
+    SoupVerdict,
+    TurtleSoupGame,
+    clean_player_text,
+)
 from .xiangqi import BLACK as XIANGQI_BLACK
 from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
@@ -34,6 +41,8 @@ class RoomManager:
         max_private_rooms: int = 1,
         empty_player_timeout: int = 60,
         idle_timeout: int = 300,
+        turtle_soup_max_hints: int = 3,
+        turtle_soup_content_level: SoupContentLevel = "normal",
         xiangqi_engine: PikafishService | None = None,
         event_callback: RoomCallback | None = None,
     ) -> None:
@@ -41,6 +50,8 @@ class RoomManager:
         self.max_private_rooms = max(0, int(max_private_rooms))
         self.empty_player_timeout = max(0, int(empty_player_timeout))
         self.idle_timeout = max(0, int(idle_timeout))
+        self.turtle_soup_max_hints = max(0, int(turtle_soup_max_hints))
+        self.turtle_soup_content_level = turtle_soup_content_level
         self.xiangqi_engine = xiangqi_engine
         self.event_callback = event_callback
         self.rooms: dict[str, GameRoom] = {}
@@ -243,7 +254,7 @@ class RoomManager:
                     human_color=human_color, difficulty=room.difficulty
                 )
                 side_label = "黑" if human_color == BLACK else "白"
-            else:
+            elif room.game_type == "tictactoe":
                 normalized_side = str(side or "human_x").strip().lower()
                 if normalized_side not in {"human_x", "human_o", "random"}:
                     normalized_side = "human_x"
@@ -258,12 +269,25 @@ class RoomManager:
                     human_mark=human_mark, difficulty=room.difficulty
                 )
                 side_label = "X" if human_mark == TICTACTOE_X else "O"
+            else:
+                room.game = TurtleSoupGame(
+                    difficulty=room.difficulty,
+                    max_hints=self.turtle_soup_max_hints,
+                    content_level=self.turtle_soup_content_level,
+                )
+                side_label = ""
             room.status = "active"
             room.touch()
-            room.add_message(
-                "system",
-                f"新对局开始，玩家执{side_label}，Bot 使用{self._difficulty_label(room.difficulty)}棋力。",
-            )
+            if isinstance(room.game, TurtleSoupGame):
+                room.add_message("system", "Bot 正在准备一道新的海龟汤。")
+            else:
+                room.add_message(
+                    "system",
+                    f"新对局开始，玩家执{side_label}，Bot 使用{self._difficulty_label(room.difficulty)}棋力。",
+                )
+        if isinstance(room.game, TurtleSoupGame):
+            await self._emit("soup_generation_requested", room, {})
+            return
         await self._emit("game_started", room, {})
         if self._is_bot_turn(room):
             await self._bot_turn(room)
@@ -287,6 +311,8 @@ class RoomManager:
                 raise PermissionError("当前浏览器不在玩家席")
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有正在进行的对局")
+            if isinstance(room.game, TurtleSoupGame):
+                raise ValueError("海龟汤不使用棋盘落子接口")
             if isinstance(room.game, XiangqiGame):
                 await room.game.place_human(
                     self._require_xiangqi_engine(),
@@ -297,8 +323,10 @@ class RoomManager:
                 )
             elif isinstance(room.game, GomokuGame):
                 room.game.place(int(row), int(column), room.game.human_color)
-            else:
+            elif isinstance(room.game, TicTacToeGame):
                 room.game.place(int(row), int(column), room.game.human_mark)
+            else:
+                raise ValueError("当前游戏不支持棋盘落子")
             room.touch()
             finished = room.game.finished
         await self._emit("board_changed", room, {"actor": "human"})
@@ -355,7 +383,15 @@ class RoomManager:
             if room.status not in {"finished", "rematch_pending"} or room.game is None:
                 raise ValueError("当前对局尚未结束，不能直接再来一局")
             room.difficulty = difficulty
-            if isinstance(room.game, XiangqiGame):
+            generation_requested = isinstance(room.game, TurtleSoupGame)
+            if generation_requested:
+                room.game = TurtleSoupGame(
+                    difficulty=difficulty,
+                    max_hints=self.turtle_soup_max_hints,
+                    content_level=self.turtle_soup_content_level,
+                )
+                side_label = ""
+            elif isinstance(room.game, XiangqiGame):
                 human_side = room.game.human_side
                 room.game = await XiangqiGame.create(
                     self._require_xiangqi_engine(),
@@ -369,18 +405,26 @@ class RoomManager:
                     human_color=human_color, difficulty=difficulty
                 )
                 side_label = "黑" if human_color == BLACK else "白"
-            else:
+            elif isinstance(room.game, TicTacToeGame):
                 human_mark = room.game.human_mark
                 room.game = TicTacToeGame(
                     human_mark=human_mark, difficulty=difficulty
                 )
                 side_label = "X" if human_mark == TICTACTOE_X else "O"
+            else:
+                raise ValueError("当前游戏状态无法重新开始")
             room.status = "active"
             room.touch()
-            room.add_message(
-                "system",
-                f"新对局开始，玩家继续执{side_label}，Bot 使用{self._difficulty_label(difficulty)}棋力。",
-            )
+            if generation_requested:
+                room.add_message("system", "Bot 正在准备一道全新的海龟汤。")
+            else:
+                room.add_message(
+                    "system",
+                    f"新对局开始，玩家继续执{side_label}，Bot 使用{self._difficulty_label(difficulty)}棋力。",
+                )
+        if generation_requested:
+            await self._emit("soup_generation_requested", room, {"rematch": True})
+            return
         await self._emit("game_started", room, {"rematch": True})
         if self._is_bot_turn(room):
             await self._bot_turn(room)
@@ -390,6 +434,8 @@ class RoomManager:
         async with room.lock:
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有可以悔棋的对局")
+            if isinstance(room.game, TurtleSoupGame):
+                raise ValueError("海龟汤不支持悔棋")
             if isinstance(room.game, XiangqiGame):
                 removed = await room.game.undo_round(self._require_xiangqi_engine())
             else:
@@ -403,12 +449,16 @@ class RoomManager:
         async with room.lock:
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有正在进行的对局")
-            if isinstance(room.game, XiangqiGame):
+            if isinstance(room.game, TurtleSoupGame):
+                room.game.give_up()
+            elif isinstance(room.game, XiangqiGame):
                 room.game.winner = room.game.bot_side
             elif isinstance(room.game, GomokuGame):
                 room.game.winner = room.game.bot_color
-            else:
+            elif isinstance(room.game, TicTacToeGame):
                 room.game.winner = room.game.bot_mark
+            else:
+                raise ValueError("当前游戏不能认输")
             room.touch()
         await self._finish_game(room)
 
@@ -460,7 +510,9 @@ class RoomManager:
             room.status = "active"
             room.touch()
             room.add_message("system", "对局继续。")
-            bot_turn = self._game_is_bot_turn(room.game)
+            bot_turn = not isinstance(
+                room.game, TurtleSoupGame
+            ) and self._game_is_bot_turn(room.game)
         if bot_turn:
             await self._bot_turn(room)
 
@@ -472,7 +524,7 @@ class RoomManager:
         force: bool = False,
     ) -> bool:
         """Switch one room's game while preserving access, seats, and scores."""
-        if game_type not in {"gomoku", "xiangqi", "tictactoe"}:
+        if game_type not in {"gomoku", "xiangqi", "tictactoe", "turtle_soup"}:
             raise ValueError("不支持的游戏类型")
         if game_type == "xiangqi":
             await self._require_xiangqi_engine().ensure_ready()
@@ -495,6 +547,145 @@ class RoomManager:
             "game_switched", room, {"from": previous, "to": game_type, "forced": force}
         )
         return True
+
+    async def complete_turtle_soup_generation(
+        self,
+        room: GameRoom,
+        game: TurtleSoupGame,
+        puzzle: SoupPuzzle,
+    ) -> bool:
+        """Publish one immutable puzzle if the room still expects it."""
+        async with room.lock:
+            if room.game is not game or room.status not in {"active", "paused"}:
+                return False
+            game.set_puzzle(puzzle)
+            room.turtle_soup_recent_signatures.append(puzzle.signature)
+            del room.turtle_soup_recent_signatures[:-8]
+            room.touch()
+            room.add_message("system", f"海龟汤《{puzzle.title}》已经准备好。")
+        await self._emit("game_started", room, {"turtle_soup": True})
+        return True
+
+    async def begin_turtle_soup_interaction(
+        self,
+        room: GameRoom,
+        text: str,
+        *,
+        source: str,
+        visitor_token: str = "",
+        actor_qq: str = "",
+        limit: int,
+    ) -> tuple[TurtleSoupGame, str]:
+        """Reserve the single judge slot without holding the lock during LLM work."""
+        cleaned = clean_player_text(text, limit=limit)
+        async with room.lock:
+            game = self._turtle_soup_game(room)
+            self._require_turtle_soup_player(
+                room,
+                source=source,
+                visitor_token=visitor_token,
+                actor_qq=actor_qq,
+            )
+            if room.status == "paused":
+                raise ValueError("当前海龟汤已经暂停")
+            if room.status != "active":
+                raise ValueError("当前没有正在进行的海龟汤")
+            game.begin_processing()
+            room.touch()
+            return game, cleaned
+
+    async def cancel_turtle_soup_interaction(
+        self, room: GameRoom, game: TurtleSoupGame, reason: str
+    ) -> None:
+        async with room.lock:
+            if room.game is game:
+                game.cancel_processing(reason)
+
+    async def resolve_turtle_soup_question(
+        self,
+        room: GameRoom,
+        game: TurtleSoupGame,
+        question: str,
+        verdict: SoupVerdict,
+        *,
+        source: Literal["web", "qq"],
+        matched_facts: set[int],
+    ) -> bool:
+        async with room.lock:
+            if room.game is not game or room.status != "active":
+                return False
+            newly_discovered = game.record_question(
+                question,
+                verdict,
+                source=source,
+                matched_facts=matched_facts,
+            )
+            room.touch()
+        await self._emit(
+            "soup_question_answered",
+            room,
+            {
+                "source": source,
+                "verdict": verdict,
+                "new_facts": len(newly_discovered),
+            },
+        )
+        return True
+
+    async def resolve_turtle_soup_answer(
+        self,
+        room: GameRoom,
+        game: TurtleSoupGame,
+        answer: str,
+        *,
+        solved: bool,
+        source: Literal["web", "qq"],
+        matched_facts: set[int],
+    ) -> bool:
+        async with room.lock:
+            if room.game is not game or room.status != "active":
+                return False
+            newly_discovered = game.record_answer(
+                answer,
+                solved=solved,
+                source=source,
+                matched_facts=matched_facts,
+            )
+            room.touch()
+        if solved:
+            await self._finish_game(room)
+        else:
+            await self._emit(
+                "soup_answer_attempted",
+                room,
+                {"source": source, "new_facts": len(newly_discovered)},
+            )
+        return True
+
+    async def request_turtle_soup_hint(
+        self,
+        room: GameRoom,
+        *,
+        source: Literal["web", "qq"],
+        visitor_token: str = "",
+        actor_qq: str = "",
+    ) -> str:
+        async with room.lock:
+            game = self._turtle_soup_game(room)
+            self._require_turtle_soup_player(
+                room,
+                source=source,
+                visitor_token=visitor_token,
+                actor_qq=actor_qq,
+            )
+            if room.status != "active":
+                raise ValueError("当前不能申请提示")
+            hint = game.reveal_hint(source=source)
+            room.touch()
+        await self._emit(
+            "soup_hint_revealed", room, {"source": source, "hint": hint}
+        )
+        return hint
 
     async def destroy(self, room_id: str, reason: str) -> GameRoom | None:
         """Destroy a room and release its quota exactly once."""
@@ -534,6 +725,8 @@ class RoomManager:
                         (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
                     )
                     continue
+            if isinstance(room.game, TurtleSoupGame) and room.game.phase == "preparing":
+                continue
             if (
                 self.empty_player_timeout
                 and room.player_empty_since is not None
@@ -563,6 +756,8 @@ class RoomManager:
             if room.status != "active" or room.game is None or room.game.finished:
                 return
             game = room.game
+            if isinstance(game, TurtleSoupGame):
+                return
             if isinstance(game, XiangqiGame):
                 try:
                     await game.place_bot(self._require_xiangqi_engine())
@@ -590,7 +785,17 @@ class RoomManager:
                 return
             room.status = "finished"
             room.completed_games += 1
-            if room.game.draw:
+            if isinstance(room.game, TurtleSoupGame):
+                room.turtle_soup_stats.questions += room.game.question_count
+                room.turtle_soup_stats.hints += room.game.hints_used
+                room.turtle_soup_stats.answer_attempts += room.game.answer_attempts
+                if room.game.solved:
+                    room.human_wins += 1
+                    result = "human_win"
+                else:
+                    room.bot_wins += 1
+                    result = "bot_win"
+            elif room.game.draw:
                 room.draws += 1
                 result = "draw"
             elif self._game_human_won(room.game):
@@ -650,7 +855,11 @@ class RoomManager:
         return self.xiangqi_engine
 
     def _is_bot_turn(self, room: GameRoom) -> bool:
-        return bool(room.game and self._game_is_bot_turn(room.game))
+        return bool(
+            room.game
+            and not isinstance(room.game, TurtleSoupGame)
+            and self._game_is_bot_turn(room.game)
+        )
 
     @staticmethod
     def _game_is_bot_turn(
@@ -664,8 +873,10 @@ class RoomManager:
 
     @staticmethod
     def _game_human_won(
-        game: GomokuGame | XiangqiGame | TicTacToeGame,
+        game: GomokuGame | XiangqiGame | TicTacToeGame | TurtleSoupGame,
     ) -> bool:
+        if isinstance(game, TurtleSoupGame):
+            return game.solved
         if isinstance(game, XiangqiGame):
             return game.winner == game.human_side
         if isinstance(game, GomokuGame):
@@ -678,4 +889,29 @@ class RoomManager:
             "gomoku": "五子棋",
             "xiangqi": "象棋",
             "tictactoe": "井字棋",
+            "turtle_soup": "海龟汤",
         }[game_type]
+
+    @staticmethod
+    def _turtle_soup_game(room: GameRoom) -> TurtleSoupGame:
+        if room.game_type != "turtle_soup" or not isinstance(
+            room.game, TurtleSoupGame
+        ):
+            raise ValueError("当前房间不是海龟汤")
+        return room.game
+
+    def _require_turtle_soup_player(
+        self,
+        room: GameRoom,
+        *,
+        source: str,
+        visitor_token: str,
+        actor_qq: str,
+    ) -> None:
+        if source == "web":
+            visitor = self._visitor(room, visitor_token)
+            if visitor.token != room.player_token:
+                raise PermissionError("只有当前玩家可以推进海龟汤")
+            return
+        if not room.player_qq or str(actor_qq or "") != room.player_qq:
+            raise PermissionError("只有当前玩家可以推进海龟汤")

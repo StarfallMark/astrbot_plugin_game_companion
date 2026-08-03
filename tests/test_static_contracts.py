@@ -19,6 +19,8 @@ def test_config_defaults_match_product_contract() -> None:
     assert rooms["allow_non_admin_group_creation"]["default"] is False
     assert schema["xiangqi"]["items"]["allow_engine_download"]["default"] is True
     assert schema["xiangqi"]["items"]["auto_download_engine"]["default"] is False
+    assert schema["turtle_soup"]["items"]["max_hints"]["default"] == 3
+    assert schema["turtle_soup"]["items"]["content_level"]["default"] == "normal"
 
 
 def test_metadata_registers_default_management_page() -> None:
@@ -29,7 +31,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.1.2"
+    assert metadata["version"] == "0.1.3"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -96,11 +98,29 @@ def test_management_page_can_switch_games_and_install_engine() -> None:
 
     assert 'action: "switch_game"' in script
     assert '["tictactoe", "井字棋"]' in script
+    assert '["turtle_soup", "海龟汤"]' in script
     assert "confirm_abandon: active" in script
     assert 'endpoint("POST", "xiangqi/install")' in script
     assert "window.confirm" not in script
     assert 'id="confirmDialog"' in page
     assert "confirmAction" in script
+
+
+def test_turtle_soup_webui_has_no_game_switcher_and_keeps_failed_input() -> None:
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="soupStage"' in page
+    assert 'id="soupInput"' in page
+    assert 'id="soupSolution"' in page
+    assert 'request("POST", action, { visitor_token: visitorToken, text })' in script
+    assert 'request("POST", "soup/hint"' in script
+    assert 'soupInput.value = "";' in script
+    failure_branch = script.index('showToast(error?.message || "Bot 暂时无法判断")')
+    success_clear = script.index('soupInput.value = "";')
+    assert success_clear < failure_branch
+    assert "switch_game" not in script
+    assert "切换游戏" not in page
 
 
 def test_room_expiry_does_not_stop_the_shared_access_channel() -> None:

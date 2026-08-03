@@ -8,10 +8,11 @@ from typing import Literal
 
 from .gomoku import Difficulty, GomokuGame
 from .tictactoe import TicTacToeGame
+from .turtle_soup import TurtleSoupGame
 from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
-GameType = Literal["gomoku", "xiangqi", "tictactoe"]
+GameType = Literal["gomoku", "xiangqi", "tictactoe", "turtle_soup"]
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
 ]
@@ -23,6 +24,13 @@ class GameScore:
     human_wins: int = 0
     bot_wins: int = 0
     draws: int = 0
+
+
+@dataclass(slots=True)
+class TurtleSoupStats:
+    questions: int = 0
+    hints: int = 0
+    answer_attempts: int = 0
 
 
 @dataclass(slots=True)
@@ -70,14 +78,17 @@ class GameRoom:
     player_qq: str = ""
     player_identity_confirmed: bool = False
     player_seat_locked: bool = False
-    game: GomokuGame | XiangqiGame | TicTacToeGame | None = None
+    game: GomokuGame | XiangqiGame | TicTacToeGame | TurtleSoupGame | None = None
     scores: dict[GameType, GameScore] = field(
         default_factory=lambda: {
             "gomoku": GameScore(),
             "xiangqi": GameScore(),
             "tictactoe": GameScore(),
+            "turtle_soup": GameScore(),
         }
     )
+    turtle_soup_stats: TurtleSoupStats = field(default_factory=TurtleSoupStats)
+    turtle_soup_recent_signatures: list[str] = field(default_factory=list)
     messages: list[dict[str, object]] = field(default_factory=list)
     close_reason: str = ""
     last_commentary_at: float = 0.0
@@ -164,6 +175,11 @@ class GameRoom:
                 "draws": self.draws,
                 "games": self.completed_games,
             },
+            "turtle_soup_stats": {
+                "questions": self.turtle_soup_stats.questions,
+                "hints": self.turtle_soup_stats.hints,
+                "answer_attempts": self.turtle_soup_stats.answer_attempts,
+            },
             "messages": self.messages[-20:],
             "close_reason": self.close_reason,
         }
@@ -193,6 +209,7 @@ class GameRoom:
                 }
                 for game_type, score in self.scores.items()
             },
+            "turtle_soup_progress": self._turtle_soup_progress(),
             "player_number": player.number if player else None,
             "player_qq": self.player_qq,
             "player_confirmed": self.player_identity_confirmed,
@@ -202,4 +219,18 @@ class GameRoom:
                     self.visitors.values(), key=lambda value: value.number
                 )
             ],
+        }
+
+    def _turtle_soup_progress(self) -> dict[str, object] | None:
+        if not isinstance(self.game, TurtleSoupGame):
+            return None
+        return {
+            "phase": self.game.phase,
+            "processing": self.game.processing,
+            "question_count": self.game.question_count,
+            "hints_used": self.game.hints_used,
+            "answer_attempts": self.game.answer_attempts,
+            "solved": self.game.solved,
+            "gave_up": self.game.gave_up,
+            "content_level": self.game.content_level,
         }

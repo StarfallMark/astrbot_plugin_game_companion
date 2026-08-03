@@ -110,6 +110,7 @@
         ["gomoku", "五子棋"],
         ["xiangqi", "中国象棋"],
         ["tictactoe", "井字棋"],
+        ["turtle_soup", "海龟汤"],
       ].forEach(([value, label]) => {
         const option = document.createElement("option");
         option.value = value;
@@ -192,7 +193,15 @@
 
       const state = document.createElement("td");
       state.append(createText("span", statusLabel(room.status), `status ${room.status}`));
-      state.append(createText("small", `棋力：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"}`));
+      if (room.game_type === "turtle_soup") {
+        const progress = room.turtle_soup_progress;
+        const phase = progress?.phase === "preparing"
+          ? "出题中"
+          : (progress?.processing ? "判断中" : `提问 ${progress?.question_count || 0} · 提示 ${progress?.hints_used || 0}`);
+        state.append(createText("small", `难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${phase}`));
+      } else {
+        state.append(createText("small", `棋力：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"}`));
+      }
 
       const actions = document.createElement("td");
       const actionList = document.createElement("div");

@@ -128,6 +128,27 @@
       }
     }
   },
+  "turtle_soup": {
+    "description": "海龟汤",
+    "type": "object",
+    "hint": "题目默认由当前会话的 Bot 生成并进行隐藏校验；模型不可用时使用内置兜底题。",
+    "items": {
+      "max_hints": {
+        "description": "每题最多提示次数",
+        "type": "int",
+        "default": 3,
+        "hint": "范围 0-8；0 表示不额外限制，可依次查看该题全部预生成提示。"
+      },
+      "content_level": {
+        "description": "题目内容等级",
+        "type": "string",
+        "default": "normal",
+        "options": ["all_ages", "normal", "unrestricted"],
+        "labels": ["全年龄", "普通", "不限制"],
+        "hint": "all_ages 为全年龄，normal 为普通悬疑，unrestricted 允许更沉重题材但仍遵守安全限制。"
+      }
+    }
+  },
   "memory": {
     "description": "陪伴记忆",
     "type": "object",
