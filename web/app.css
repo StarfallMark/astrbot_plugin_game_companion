@@ -267,6 +267,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
   border-radius: 6px;
   background: #ecefec;
 }
+.side-choice[hidden] { display: none; }
 .side-choice button { border: 0; border-radius: 4px; padding: 8px 4px; background: transparent; color: #5b635e; font-size: 12px; }
 .side-choice button.is-active { background: #fff; color: #202522; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
 .primary-action {

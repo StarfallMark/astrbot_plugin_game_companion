@@ -109,12 +109,15 @@ def test_management_page_can_switch_games_and_install_engine() -> None:
 def test_turtle_soup_webui_has_no_game_switcher_and_keeps_failed_input() -> None:
     script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
 
     assert 'id="soupStage"' in page
     assert 'id="soupInput"' in page
     assert 'id="soupSolution"' in page
     assert 'request("POST", action, { visitor_token: visitorToken, text })' in script
     assert 'request("POST", "soup/hint"' in script
+    assert 'sideChoice.hidden = room.game_type === "turtle_soup"' in script
+    assert ".side-choice[hidden] { display: none; }" in styles
     assert 'soupInput.value = "";' in script
     failure_branch = script.index('showToast(error?.message || "Bot 暂时无法判断")')
     success_clear = script.index('soupInput.value = "";')
