@@ -138,6 +138,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
 .soup-progress div:last-child { border: 0; }
 .soup-progress dt { color: #747d77; font-size: 11px; }
 .soup-progress dd { margin: 2px 0 0; font-size: 16px; font-weight: 700; }
+.soup-turn { margin: 0 26px 12px; min-height: 20px; color: #8c5b18; font-size: 13px; font-weight: 650; }
 .soup-history {
   flex: 1;
   min-height: 180px;
@@ -184,6 +185,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
   border-radius: 6px;
   background: #e9edea;
 }
+.soup-mode[hidden], .secondary-action[hidden] { display: none; }
 .soup-mode button { min-width: 76px; border: 0; border-radius: 4px; padding: 6px 10px; background: transparent; color: #5c665f; }
 .soup-mode button.is-active { background: #fff; color: #202522; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
 .soup-composer textarea {
@@ -397,6 +399,8 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
 .person-chip.player { background: #fbe9d9; color: #8c4616; }
 .person-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #9da59f; }
 .person-chip.online::before { background: #2b8a5b; }
+.person-chip button { border: 0; border-left: 1px solid #cfd6d1; padding: 2px 0 2px 6px; background: transparent; color: #215c45; font-size: 11px; }
+.person-chip button:hover { color: #9b4b37; }
 
 .messages { display: grid; gap: 7px; max-height: 180px; margin-top: 10px; overflow: auto; }
 .message { margin: 0; padding-left: 9px; border-left: 2px solid #d5dad6; color: #4f5852; font-size: 12px; line-height: 1.5; }

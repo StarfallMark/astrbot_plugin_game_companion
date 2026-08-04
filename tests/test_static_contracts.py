@@ -21,6 +21,14 @@ def test_config_defaults_match_product_contract() -> None:
     assert schema["xiangqi"]["items"]["auto_download_engine"]["default"] is False
     assert schema["turtle_soup"]["items"]["max_hints"]["default"] == 3
     assert schema["turtle_soup"]["items"]["content_level"]["default"] == "normal"
+    assert schema["turtle_soup"]["items"]["max_players"]["default"] == 6
+    assert schema["multiplayer"]["items"]["turn_timeout_seconds"]["default"] == 60
+    assert (
+        schema["multiplayer"]["items"]["swap_request_cooldown_seconds"]["default"] == 30
+    )
+    assert (
+        schema["multiplayer"]["items"]["swap_request_expiry_seconds"]["default"] == 20
+    )
 
 
 def test_metadata_registers_default_management_page() -> None:
@@ -31,7 +39,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.1.4"
+    assert metadata["version"] == "0.1.5"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -120,6 +128,9 @@ def test_turtle_soup_webui_has_no_game_switcher_and_keeps_failed_input() -> None
     assert success_clear < failure_branch
     assert "switch_game" not in script
     assert "切换游戏" not in page
+    assert '"soup/reverse"' in script
+    assert 'request("POST", "seat/swap/request"' in script
+    assert 'id="soupCorrectAction"' in page
 
 
 def test_room_expiry_does_not_stop_the_shared_access_channel() -> None:

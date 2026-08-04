@@ -160,7 +160,26 @@
         const chip = document.createElement("span");
         chip.className = `visitor ${visitor.online ? "online" : ""} ${visitor.is_player ? "player" : ""}`;
         const dot = document.createElement("i");
-        chip.append(dot, document.createTextNode(`${visitor.number} 号${visitor.is_player ? " · 玩家" : ""}`));
+        chip.append(dot, document.createTextNode(`${visitor.number} 号${visitor.is_player ? " · 玩家" : ""}${visitor.is_current_player ? " · 当前" : ""}`));
+        if (visitor.is_player) {
+          const demote = document.createElement("button");
+          demote.type = "button";
+          demote.className = "visitor-kick";
+          demote.title = `将 ${visitor.number} 号移到观众席`;
+          demote.setAttribute("aria-label", demote.title);
+          demote.innerHTML = '<i data-lucide="user-round-minus"></i>';
+          demote.addEventListener("click", async () => {
+            try {
+              await endpoint("POST", "room/action", {
+                room_id: room.room_id, action: "demote", visitor_number: visitor.number,
+              });
+              await loadRooms();
+            } catch (error) {
+              showToast(error?.message || "移出玩家席失败");
+            }
+          });
+          chip.appendChild(demote);
+        }
         const kick = document.createElement("button");
         kick.type = "button";
         kick.className = "visitor-kick";
@@ -170,7 +189,7 @@
         kick.addEventListener("click", async () => {
           if (!await confirmAction({
             title: "移出访客",
-            message: `确认将 ${visitor.number} 号移出房间？如果该访客正在玩家席，本局将被重置。`,
+            message: `确认将 ${visitor.number} 号移出房间？多人游戏会在仍有其他玩家时继续。`,
             label: "确认移出",
             danger: true,
           })) return;
@@ -189,8 +208,11 @@
       members.appendChild(visitorList);
 
       const player = document.createElement("td");
-      player.append(createText("strong", room.player_number ? `${room.player_number} 号` : "未安排"));
-      player.append(createText("small", room.player_qq ? `QQ ${room.player_qq}` : "尚未绑定 QQ"));
+      const playerNumbers = Array.isArray(room.player_numbers) ? room.player_numbers : [];
+      player.append(createText("strong", playerNumbers.length ? playerNumbers.map((number) => `${number} 号`).join("、") : "未安排"));
+      player.append(createText("small", room.player_capacity > 1 || room.player_capacity === 0
+        ? `${playerNumbers.length} / ${room.player_capacity || "不限"} 席`
+        : (room.player_qq ? `QQ ${room.player_qq}` : "尚未绑定 QQ")));
 
       const state = document.createElement("td");
       state.append(createText("span", statusLabel(room.status), `status ${room.status}`));
@@ -199,7 +221,8 @@
         const phase = progress?.phase === "preparing"
           ? "出题中"
           : (progress?.processing ? "判断中" : `提问 ${progress?.question_count || 0} · 提示 ${progress?.hints_used || 0}`);
-        state.append(createText("small", `难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${phase}`));
+        const soupMode = room.turtle_soup_mode === "player_host" ? "玩家出题" : "Bot 出题";
+        state.append(createText("small", `${soupMode} · 难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${phase}`));
       } else if (room.game_type === "pig_dice") {
         const progress = room.pig_dice_progress;
         const style = { cautious: "稳健", balanced: "均衡", bold: "大胆" }[progress?.risk_style] || "均衡";
@@ -222,7 +245,6 @@
       assign.innerHTML = '<i data-lucide="user-check"></i>';
       assign.addEventListener("click", () => openAssign(room));
       actionList.appendChild(assign);
-      if (room.player_number) actionList.appendChild(actionButton("user-round-minus", "移到观众席", "demote", room));
       if (room.status === "active") actionList.appendChild(actionButton("pause", "暂停", "pause", room));
       if (room.status === "paused") actionList.appendChild(actionButton("play", "继续", "resume", room));
       actionList.appendChild(actionButton("x", "关闭房间", "close", room, "danger"));
@@ -324,9 +346,14 @@
       option.textContent = `${visitor.number} 号${visitor.online ? " · 在线" : " · 离线"}`;
       select.appendChild(option);
     });
+    const syncQq = () => {
+      const selected = (room.visitors || []).find((visitor) => String(visitor.number) === select.value);
+      document.getElementById("assignQq").value = selected?.player_qq || "";
+    };
+    select.onchange = syncQq;
     document.getElementById("assignRoomId").value = room.room_id;
     document.getElementById("assignRoomLabel").textContent = `房间 ${room.room_id}`;
-    document.getElementById("assignQq").value = room.player_qq || "";
+    syncQq();
     document.getElementById("confirmAssign").disabled = !(room.visitors || []).length;
     assignDialog.showModal();
     icons();

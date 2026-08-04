@@ -7,7 +7,16 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from .gomoku import BLACK, WHITE, Difficulty, GomokuGame
-from .models import GameRoom, GameType, RoomSource, Visitor
+from .models import (
+    GameRoom,
+    GameType,
+    MultiplayerState,
+    PlayerSeat,
+    RoomSource,
+    SeatSwapRequest,
+    TurtleSoupMode,
+    Visitor,
+)
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
@@ -44,6 +53,10 @@ class RoomManager:
         idle_timeout: int = 300,
         turtle_soup_max_hints: int = 3,
         turtle_soup_content_level: SoupContentLevel = "normal",
+        turtle_soup_max_players: int = 6,
+        multiplayer_turn_timeout: int = 60,
+        swap_request_cooldown: int = 30,
+        swap_request_expiry: int = 20,
         xiangqi_engine: PikafishService | None = None,
         event_callback: RoomCallback | None = None,
     ) -> None:
@@ -53,6 +66,10 @@ class RoomManager:
         self.idle_timeout = max(0, int(idle_timeout))
         self.turtle_soup_max_hints = max(0, int(turtle_soup_max_hints))
         self.turtle_soup_content_level = turtle_soup_content_level
+        self.turtle_soup_max_players = max(0, int(turtle_soup_max_players))
+        self.multiplayer_turn_timeout = max(0, int(multiplayer_turn_timeout))
+        self.swap_request_cooldown = max(0, int(swap_request_cooldown))
+        self.swap_request_expiry = max(1, int(swap_request_expiry))
         self.xiangqi_engine = xiangqi_engine
         self.event_callback = event_callback
         self.rooms: dict[str, GameRoom] = {}
@@ -72,6 +89,7 @@ class RoomManager:
         admin_room: bool,
         game_type: GameType = "gomoku",
         difficulty: Difficulty,
+        turtle_soup_mode: TurtleSoupMode = "bot_host",
     ) -> GameRoom:
         """Create a room atomically under the source-wide quota."""
         async with self._lock:
@@ -98,7 +116,9 @@ class RoomManager:
                 admin_room=admin_room,
                 game_type=game_type,
                 difficulty=difficulty,
+                turtle_soup_mode=turtle_soup_mode,
             )
+            self._configure_multiplayer(room)
             self.rooms[room_id] = room
             self._access_index[access_token] = room_id
             return room
@@ -150,20 +170,50 @@ class RoomManager:
         self, room: GameRoom, visitor_token: str, side: str
     ) -> None:
         """Claim a normal room's empty player seat and start the first game."""
+        start_required = False
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             if room.admin_room:
                 raise ValueError("这个房间需要管理员从游戏管理台安排玩家")
-            if room.player_token and room.player_token != visitor.token:
-                raise ValueError("玩家席已经有人，请联系创建者处理")
-            if room.player_seat_locked and room.player_token != visitor.token:
-                raise ValueError("玩家席已由创建者锁定")
-            room.player_token = visitor.token
-            room.player_qq = room.creator_qq
-            room.player_empty_since = None
-            room.status = "setup"
-            room.touch()
-        await self.start_game(room, visitor_token, side)
+            if room.multiplayer.enabled:
+                if room.multiplayer.seat_for_token(visitor.token) is not None:
+                    raise ValueError("你已经在玩家席")
+                if (
+                    room.multiplayer.capacity
+                    and len(room.multiplayer.seats) >= room.multiplayer.capacity
+                ):
+                    raise ValueError("玩家席已经坐满")
+                first = not room.multiplayer.seats
+                room.multiplayer.seats.append(
+                    PlayerSeat(
+                        visitor_token=visitor.token,
+                        qq=room.creator_qq if first else "",
+                    )
+                )
+                self._sync_primary_player(room)
+                room.player_empty_since = None
+                room.touch()
+                if first:
+                    room.status = "setup"
+                    start_required = True
+                else:
+                    room.add_message("system", f"{visitor.number} 号加入了玩家席。")
+                self._reset_turn_deadline(room)
+            else:
+                if room.player_token and room.player_token != visitor.token:
+                    raise ValueError("玩家席已经有人，请联系创建者处理")
+                if room.player_seat_locked and room.player_token != visitor.token:
+                    raise ValueError("玩家席已由创建者锁定")
+                room.player_token = visitor.token
+                room.player_qq = room.creator_qq
+                room.player_empty_since = None
+                room.status = "setup"
+                room.touch()
+                start_required = True
+        if start_required:
+            await self.start_game(room, visitor_token, side)
+        else:
+            await self._emit("seats_changed", room, {"joined": visitor.number})
 
     async def assign_player(
         self, room: GameRoom, visitor_number: int, player_qq: str
@@ -174,14 +224,39 @@ class RoomManager:
             player_qq = str(player_qq or "").strip()
             if not player_qq.isdigit():
                 raise ValueError("玩家 QQ 号必须只包含数字")
-            room.player_token = visitor.token
-            room.player_qq = player_qq
-            room.player_identity_confirmed = True
-            room.player_seat_locked = True
-            room.player_empty_since = None
-            room.game = None
-            room.status = "setup"
-            room.touch()
+            if room.multiplayer.enabled:
+                seat = room.multiplayer.seat_for_token(visitor.token)
+                if seat is None:
+                    if (
+                        room.multiplayer.capacity
+                        and len(room.multiplayer.seats) >= room.multiplayer.capacity
+                    ):
+                        raise ValueError("玩家席已经坐满")
+                    seat = PlayerSeat(visitor_token=visitor.token)
+                    room.multiplayer.seats.append(seat)
+                seat.qq = player_qq
+                seat.identity_confirmed = True
+                room.confirmed_participant_qqs.add(player_qq)
+                first = room.player_token == ""
+                self._sync_primary_player(room)
+                room.player_seat_locked = True
+                room.player_empty_since = None
+                if room.game is None and room.status == "waiting":
+                    room.status = "setup"
+                if first:
+                    room.status = "setup"
+                self._reset_turn_deadline(room)
+                room.touch()
+            else:
+                room.player_token = visitor.token
+                room.player_qq = player_qq
+                room.player_identity_confirmed = True
+                room.confirmed_participant_qqs.add(player_qq)
+                room.player_seat_locked = True
+                room.player_empty_since = None
+                room.game = None
+                room.status = "setup"
+                room.touch()
         await self._emit("player_confirmed", room, {})
 
     async def correct_creator(
@@ -194,14 +269,45 @@ class RoomManager:
             if str(actor_qq) != room.creator_qq:
                 raise PermissionError("只有房间创建者能纠正玩家身份")
             visitor = self._visitor_by_number(room, visitor_number)
-            room.player_token = visitor.token
-            room.player_qq = room.creator_qq
-            room.player_identity_confirmed = True
+            if room.multiplayer.enabled:
+                seats = room.multiplayer.seats
+                target_index = next(
+                    (
+                        index
+                        for index, seat in enumerate(seats)
+                        if seat.visitor_token == visitor.token
+                    ),
+                    -1,
+                )
+                creator_seat = PlayerSeat(
+                    visitor_token=visitor.token,
+                    qq=room.creator_qq,
+                    identity_confirmed=True,
+                )
+                if seats:
+                    previous_primary = seats[0]
+                    seats[0] = creator_seat
+                    if target_index > 0:
+                        seats[target_index] = PlayerSeat(
+                            visitor_token=previous_primary.visitor_token
+                        )
+                else:
+                    seats.append(creator_seat)
+                room.multiplayer.current_turn_index = 0
+                room.multiplayer.swap_requests.clear()
+                self._sync_primary_player(room)
+                room.confirmed_participant_qqs.add(room.creator_qq)
+            else:
+                room.player_token = visitor.token
+                room.player_qq = room.creator_qq
+                room.player_identity_confirmed = True
+                room.confirmed_participant_qqs.add(room.creator_qq)
             room.player_seat_locked = True
             room.player_empty_since = None
             room.game = None
             room.status = "setup"
             room.touch()
+            self._reset_turn_deadline(room)
             room.add_message(
                 "system", f"身份已纠正：{visitor.number} 号成为玩家，对局已重置。"
             )
@@ -214,8 +320,18 @@ class RoomManager:
                 raise PermissionError("只有房间创建者能确认自己的身份")
             if not room.player_token:
                 raise ValueError("当前还没有人在玩家席")
-            room.player_qq = room.creator_qq
-            room.player_identity_confirmed = True
+            if room.multiplayer.enabled:
+                seat = room.multiplayer.seat_for_token(room.player_token)
+                if seat is None:
+                    raise ValueError("当前还没有主玩家席")
+                seat.qq = room.creator_qq
+                seat.identity_confirmed = True
+                room.confirmed_participant_qqs.add(room.creator_qq)
+                self._sync_primary_player(room)
+            else:
+                room.player_qq = room.creator_qq
+                room.player_identity_confirmed = True
+                room.confirmed_participant_qqs.add(room.creator_qq)
             room.player_seat_locked = True
             room.touch()
         await self._emit("player_confirmed", room, {})
@@ -224,7 +340,11 @@ class RoomManager:
         """Start a game after a seat has been assigned."""
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
-            if visitor.token != room.player_token:
+            if room.multiplayer.enabled:
+                allowed = room.multiplayer.seat_for_token(visitor.token) is not None
+            else:
+                allowed = visitor.token == room.player_token
+            if not allowed:
                 raise PermissionError("只有当前玩家可以开始对局")
             if room.status not in {"setup", "finished", "rematch_pending"}:
                 raise ValueError("当前房间状态不能开始新对局")
@@ -276,12 +396,18 @@ class RoomManager:
                     difficulty=room.difficulty,
                     max_hints=self.turtle_soup_max_hints,
                     content_level=self.turtle_soup_content_level,
+                    mode=room.turtle_soup_mode,
                 )
                 side_label = ""
             room.status = "active"
             room.touch()
             if isinstance(room.game, TurtleSoupGame):
-                room.add_message("system", "Bot 正在准备一道新的海龟汤。")
+                room.add_message(
+                    "system",
+                    "Bot 正在准备一道新的海龟汤。"
+                    if room.game.mode == "bot_host"
+                    else "玩家出题模式开始，请当前玩家提供第一条公开线索。",
+                )
             elif isinstance(room.game, PigDiceGame):
                 first = "玩家" if room.game.turn == "human" else "Bot"
                 room.add_message(
@@ -292,9 +418,12 @@ class RoomManager:
                     "system",
                     f"新对局开始，玩家执{side_label}，Bot 使用{self._difficulty_label(room.difficulty)}棋力。",
                 )
-        if isinstance(room.game, TurtleSoupGame):
+        if isinstance(room.game, TurtleSoupGame) and room.game.mode == "bot_host":
             await self._emit("soup_generation_requested", room, {})
             return
+        if isinstance(room.game, TurtleSoupGame):
+            async with room.lock:
+                self._reset_turn_deadline(room)
         await self._emit("game_started", room, {})
         if self._is_bot_turn(room):
             await self._bot_turn(room)
@@ -376,7 +505,12 @@ class RoomManager:
         """Put a finished room into a Bot-decided rematch request state."""
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
-            if visitor.token != room.player_token:
+            expected = (
+                room.multiplayer.current_token
+                if room.multiplayer.enabled
+                else room.player_token
+            )
+            if visitor.token != expected:
                 raise PermissionError("只有当前玩家能申请再来一局")
             if room.status != "finished":
                 raise ValueError("当前还不能申请再来一局")
@@ -420,12 +554,16 @@ class RoomManager:
             if room.status not in {"finished", "rematch_pending"} or room.game is None:
                 raise ValueError("当前对局尚未结束，不能直接再来一局")
             room.difficulty = difficulty
-            generation_requested = isinstance(room.game, TurtleSoupGame)
-            if generation_requested:
+            generation_requested = (
+                isinstance(room.game, TurtleSoupGame)
+                and room.turtle_soup_mode == "bot_host"
+            )
+            if isinstance(room.game, TurtleSoupGame):
                 room.game = TurtleSoupGame(
                     difficulty=difficulty,
                     max_hints=self.turtle_soup_max_hints,
                     content_level=self.turtle_soup_content_level,
+                    mode=room.turtle_soup_mode,
                 )
                 side_label = ""
             elif isinstance(room.game, XiangqiGame):
@@ -451,8 +589,12 @@ class RoomManager:
                 raise ValueError("当前游戏状态无法重新开始")
             room.status = "active"
             room.touch()
-            if generation_requested:
+            if isinstance(room.game, TurtleSoupGame):
                 room.add_message("system", "Bot 正在准备一道全新的海龟汤。")
+                if room.game.mode == "player_host":
+                    room.messages[-1]["content"] = (
+                        "新一轮玩家出题开始，请当前玩家提供第一条公开线索。"
+                    )
             elif isinstance(room.game, PigDiceGame):
                 first = "玩家" if room.game.turn == "human" else "Bot"
                 room.add_message(
@@ -463,6 +605,7 @@ class RoomManager:
                     "system",
                     f"新对局开始，玩家继续执{side_label}，Bot 使用{self._difficulty_label(difficulty)}棋力。",
                 )
+            self._reset_turn_deadline(room)
         if generation_requested:
             await self._emit("soup_generation_requested", room, {"rematch": True})
             return
@@ -506,17 +649,38 @@ class RoomManager:
         await self._finish_game(room)
 
     async def remove_player(
-        self, room: GameRoom, *, reason: str = "玩家已被移到观众席"
+        self,
+        room: GameRoom,
+        visitor_number: int = 0,
+        *,
+        reason: str = "玩家已被移到观众席",
     ) -> None:
-        """Clear the player seat and reset the unfinished game."""
+        """Clear one seat, preserving multiplayer games while seats remain."""
         async with room.lock:
-            room.player_token = ""
-            room.player_qq = ""
-            room.player_identity_confirmed = False
-            room.player_seat_locked = room.admin_room
-            room.player_empty_since = time.time()
-            room.game = None
-            room.status = "waiting"
+            if room.multiplayer.enabled:
+                target = (
+                    self._visitor_by_number(room, visitor_number)
+                    if visitor_number
+                    else room.player
+                )
+                if target is None:
+                    raise ValueError("当前没有玩家可以移到观众席")
+                self._remove_multiplayer_seat(room, target.token)
+                if room.multiplayer.seats:
+                    room.player_empty_since = None
+                    self._sync_primary_player(room)
+                    self._reset_turn_deadline(room)
+                else:
+                    self._clear_primary_player(room)
+                    room.player_empty_since = time.time()
+                    room.game = None
+                    room.status = "waiting"
+            else:
+                self._clear_primary_player(room)
+                room.player_seat_locked = room.admin_room
+                room.player_empty_since = time.time()
+                room.game = None
+                room.status = "waiting"
             room.touch()
             room.add_message("system", reason)
 
@@ -524,15 +688,24 @@ class RoomManager:
         """Invalidate one browser identity and clear its seat if necessary."""
         async with room.lock:
             visitor = self._visitor_by_number(room, visitor_number)
-            was_player = visitor.token == room.player_token
+            was_player = (
+                room.multiplayer.seat_for_token(visitor.token) is not None
+                if room.multiplayer.enabled
+                else visitor.token == room.player_token
+            )
+            if room.multiplayer.enabled and was_player:
+                self._remove_multiplayer_seat(room, visitor.token)
             room.visitors.pop(visitor.token, None)
             if was_player:
-                room.player_token = ""
-                room.player_qq = ""
-                room.player_identity_confirmed = False
-                room.player_empty_since = time.time()
-                room.game = None
-                room.status = "waiting"
+                if room.multiplayer.enabled and room.multiplayer.seats:
+                    self._sync_primary_player(room)
+                    room.player_empty_since = None
+                    self._reset_turn_deadline(room)
+                else:
+                    self._clear_primary_player(room)
+                    room.player_empty_since = time.time()
+                    room.game = None
+                    room.status = "waiting"
             room.touch()
             room.add_message("system", f"{visitor.number} 号已被移出房间。")
 
@@ -542,6 +715,7 @@ class RoomManager:
             if room.status != "active":
                 raise ValueError("当前对局不能暂停")
             room.status = "paused"
+            self._reset_turn_deadline(room)
             room.touch()
             room.add_message("system", "对局已暂停。")
 
@@ -552,6 +726,7 @@ class RoomManager:
                 raise ValueError("当前没有已暂停的对局")
             room.status = "active"
             room.touch()
+            self._reset_turn_deadline(room)
             room.add_message("system", "对局继续。")
             bot_turn = not isinstance(
                 room.game, TurtleSoupGame
@@ -584,6 +759,7 @@ class RoomManager:
                 raise ValueError("当前对局尚未结束，需要明确放弃本局后才能切换游戏")
             previous = room.game_type
             room.game_type = game_type
+            self._configure_multiplayer(room)
             room.game = None
             room.status = "setup" if room.player_token else "waiting"
             room.player_empty_since = None if room.player_token else time.time()
@@ -595,6 +771,38 @@ class RoomManager:
         await self._emit(
             "game_switched", room, {"from": previous, "to": game_type, "forced": force}
         )
+        return True
+
+    async def switch_turtle_soup_mode(
+        self,
+        room: GameRoom,
+        mode: TurtleSoupMode,
+        *,
+        force: bool = False,
+    ) -> bool:
+        """Change only the turtle-soup variant while preserving room seats."""
+        if mode not in {"bot_host", "player_host"}:
+            raise ValueError("不支持的海龟汤玩法")
+        async with room.lock:
+            if room.game_type != "turtle_soup":
+                raise ValueError("当前房间不是海龟汤")
+            if room.turtle_soup_mode == mode:
+                return False
+            if room.status in {"active", "paused"} and not force:
+                raise ValueError("当前海龟汤尚未结束，需要明确放弃后才能切换玩法")
+            room.turtle_soup_mode = mode
+            room.game = None
+            room.status = "setup" if room.player_token else "waiting"
+            room.touch()
+            room.add_message(
+                "system",
+                "海龟汤玩法已切换为"
+                + (
+                    "Bot 出题、玩家猜。" if mode == "bot_host" else "玩家出题、Bot 猜。"
+                ),
+            )
+            self._reset_turn_deadline(room)
+        await self._emit("game_switched", room, {"soup_mode": mode})
         return True
 
     async def complete_turtle_soup_generation(
@@ -612,6 +820,7 @@ class RoomManager:
             del room.turtle_soup_recent_signatures[:-8]
             room.touch()
             room.add_message("system", f"海龟汤《{puzzle.title}》已经准备好。")
+            self._reset_turn_deadline(room)
         await self._emit("game_started", room, {"turtle_soup": True})
         return True
 
@@ -629,7 +838,7 @@ class RoomManager:
         cleaned = clean_player_text(text, limit=limit)
         async with room.lock:
             game = self._turtle_soup_game(room)
-            self._require_turtle_soup_player(
+            player_number = self._require_turtle_soup_player(
                 room,
                 source=source,
                 visitor_token=visitor_token,
@@ -640,6 +849,8 @@ class RoomManager:
             if room.status != "active":
                 raise ValueError("当前没有正在进行的海龟汤")
             game.begin_processing()
+            game.processing_player_number = player_number
+            room.multiplayer.turn_deadline = 0.0
             room.touch()
             return game, cleaned
 
@@ -649,6 +860,7 @@ class RoomManager:
         async with room.lock:
             if room.game is game:
                 game.cancel_processing(reason)
+                self._reset_turn_deadline(room)
 
     async def resolve_turtle_soup_question(
         self,
@@ -668,8 +880,10 @@ class RoomManager:
                 verdict,
                 source=source,
                 matched_facts=matched_facts,
+                player_number=game.processing_player_number,
             )
             room.touch()
+            self._advance_multiplayer_turn(room)
         await self._emit(
             "soup_question_answered",
             room,
@@ -699,8 +913,10 @@ class RoomManager:
                 solved=solved,
                 source=source,
                 matched_facts=matched_facts,
+                player_number=game.processing_player_number,
             )
             room.touch()
+            self._advance_multiplayer_turn(room)
         if solved:
             await self._finish_game(room)
         else:
@@ -721,7 +937,7 @@ class RoomManager:
     ) -> str:
         async with room.lock:
             game = self._turtle_soup_game(room)
-            self._require_turtle_soup_player(
+            player_number = self._require_turtle_soup_player(
                 room,
                 source=source,
                 visitor_token=visitor_token,
@@ -729,10 +945,165 @@ class RoomManager:
             )
             if room.status != "active":
                 raise ValueError("当前不能申请提示")
-            hint = game.reveal_hint(source=source)
+            if game.mode != "bot_host":
+                raise ValueError("玩家出题模式不提供 Bot 预设提示")
+            hint = game.reveal_hint(source=source, player_number=player_number)
             room.touch()
+            self._advance_multiplayer_turn(room)
         await self._emit("soup_hint_revealed", room, {"source": source, "hint": hint})
         return hint
+
+    async def resolve_reverse_turtle_soup_turn(
+        self,
+        room: GameRoom,
+        game: TurtleSoupGame,
+        player_text: str,
+        *,
+        bot_action: Literal["question", "guess"],
+        bot_text: str,
+        source: Literal["web", "qq"],
+    ) -> bool:
+        """Publish one public Bot question or guess in player-hosted mode."""
+        async with room.lock:
+            if room.game is not game or room.status != "active":
+                return False
+            player_number = game.processing_player_number
+            game.record_reverse_turn(
+                player_text,
+                bot_action=bot_action,
+                bot_text=bot_text,
+                source=source,
+                player_number=player_number,
+            )
+            room.add_message("bot", bot_text)
+            room.touch()
+            self._advance_multiplayer_turn(room)
+        await self._emit(
+            "soup_reverse_turn",
+            room,
+            {"source": source, "bot_action": bot_action},
+        )
+        return True
+
+    async def confirm_reverse_turtle_soup_guess(
+        self,
+        room: GameRoom,
+        *,
+        source: Literal["web", "qq"],
+        visitor_token: str = "",
+        actor_qq: str = "",
+    ) -> None:
+        """Let the current player authoritatively mark the Bot's guess correct."""
+        async with room.lock:
+            game = self._turtle_soup_game(room)
+            self._require_turtle_soup_player(
+                room,
+                source=source,
+                visitor_token=visitor_token,
+                actor_qq=actor_qq,
+            )
+            if room.status != "active":
+                raise ValueError("当前不能判定 Bot 的猜测")
+            game.confirm_bot_guess(correct=True)
+            room.touch()
+        await self._finish_game(room)
+
+    async def request_seat_swap(
+        self,
+        room: GameRoom,
+        visitor_token: str,
+        target_number: int,
+        *,
+        now: float | None = None,
+    ) -> str:
+        """Create a rate-limited spectator request for one occupied seat."""
+        current = time.time() if now is None else float(now)
+        async with room.lock:
+            state = room.multiplayer
+            if not state.enabled:
+                raise ValueError("当前游戏不支持多人席位交换")
+            requester = self._visitor(room, visitor_token)
+            self._purge_swap_requests(room, current)
+            if state.seat_for_token(requester.token) is not None:
+                raise ValueError("玩家席内不能申请交换其他玩家")
+            target = self._visitor_by_number(room, target_number)
+            if state.seat_for_token(target.token) is None:
+                raise ValueError("目标访客当前不在玩家席")
+            cooldown_until = (
+                state.last_swap_request_at.get(requester.token, 0)
+                + state.swap_cooldown_seconds
+            )
+            if state.swap_cooldown_seconds and current < cooldown_until:
+                remaining = max(1, int(cooldown_until - current + 0.999))
+                raise ValueError(f"请等待 {remaining} 秒后再发送交换申请")
+            if any(
+                item.requester_token == requester.token
+                for item in state.swap_requests.values()
+            ):
+                raise ValueError("你已经有一条等待处理的交换申请")
+            request_id = secrets.token_urlsafe(10)
+            state.swap_requests[request_id] = SeatSwapRequest(
+                request_id=request_id,
+                requester_token=requester.token,
+                target_token=target.token,
+                created_at=current,
+                expires_at=current + state.swap_request_expiry_seconds,
+            )
+            state.last_swap_request_at[requester.token] = current
+        return request_id
+
+    async def resolve_seat_swap(
+        self,
+        room: GameRoom,
+        visitor_token: str,
+        request_id: str,
+        *,
+        accepted: bool,
+        now: float | None = None,
+    ) -> bool:
+        """Accept or decline one request as its target player."""
+        current = time.time() if now is None else float(now)
+        async with room.lock:
+            state = room.multiplayer
+            visitor = self._visitor(room, visitor_token)
+            self._purge_swap_requests(room, current)
+            swap = state.swap_requests.get(str(request_id or ""))
+            if swap is None:
+                raise ValueError("交换申请不存在或已经失效")
+            if swap.target_token != visitor.token:
+                raise PermissionError("只有被申请的玩家可以处理这条申请")
+            requester = room.visitors.get(swap.requester_token)
+            state.swap_requests.pop(swap.request_id, None)
+            if not accepted:
+                return False
+            if requester is None or state.seat_for_token(requester.token) is not None:
+                raise ValueError("申请者已经离开或身份已经变化")
+            target_index = next(
+                (
+                    index
+                    for index, seat in enumerate(state.seats)
+                    if seat.visitor_token == swap.target_token
+                ),
+                -1,
+            )
+            if target_index < 0:
+                raise ValueError("目标玩家已经不在玩家席")
+            state.seats[target_index] = PlayerSeat(visitor_token=requester.token)
+            state.swap_requests = {
+                key: item
+                for key, item in state.swap_requests.items()
+                if requester.token not in {item.requester_token, item.target_token}
+                and visitor.token not in {item.requester_token, item.target_token}
+            }
+            self._sync_primary_player(room)
+            self._reset_turn_deadline(room, now=current)
+            room.add_message(
+                "system",
+                f"{requester.number} 号与 {visitor.number} 号完成席位交换。",
+            )
+            room.touch()
+        await self._emit("seats_changed", room, {"swapped": True})
+        return True
 
     async def destroy(self, room_id: str, reason: str) -> GameRoom | None:
         """Destroy a room and release its quota exactly once."""
@@ -756,18 +1127,29 @@ class RoomManager:
         current = time.time() if now is None else float(now)
         expired: list[tuple[str, str]] = []
         for room in list(self.rooms.values()):
+            await self._tick_multiplayer_room(room, current)
             player = room.player
             if room.status == "finished" and player is not None:
-                explicitly_left = (
-                    player.left_at is not None
-                    and current - player.left_at
-                    >= self.FINISHED_PLAYER_LEAVE_GRACE_SECONDS
+                seated_visitors = (
+                    [
+                        room.visitors[seat.visitor_token]
+                        for seat in room.multiplayer.seats
+                        if seat.visitor_token in room.visitors
+                    ]
+                    if room.multiplayer.enabled
+                    else [player]
                 )
-                heartbeat_lost = (
-                    current - player.last_seen_at
+                all_departed = bool(seated_visitors) and all(
+                    (
+                        visitor.left_at is not None
+                        and current - visitor.left_at
+                        >= self.FINISHED_PLAYER_LEAVE_GRACE_SECONDS
+                    )
+                    or current - visitor.last_seen_at
                     >= self.FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS
+                    for visitor in seated_visitors
                 )
-                if explicitly_left or heartbeat_lost:
+                if all_departed:
                     expired.append(
                         (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
                     )
@@ -867,7 +1249,7 @@ class RoomManager:
                 room.turtle_soup_stats.questions += room.game.question_count
                 room.turtle_soup_stats.hints += room.game.hints_used
                 room.turtle_soup_stats.answer_attempts += room.game.answer_attempts
-                if room.game.solved:
+                if room.game.winner == "human":
                     room.human_wins += 1
                     result = "human_win"
                 else:
@@ -888,6 +1270,167 @@ class RoomManager:
     async def _emit(self, event: str, room: GameRoom, payload: dict[str, Any]) -> None:
         if self.event_callback is not None:
             await self.event_callback(event, room, payload)
+
+    async def _tick_multiplayer_room(self, room: GameRoom, now: float) -> None:
+        """Expire swap requests and rotate an overdue active turn."""
+        async with room.lock:
+            state = room.multiplayer
+            if not state.enabled:
+                return
+            self._purge_swap_requests(room, now)
+            game = room.game
+            turn_active = bool(
+                room.status == "active"
+                and isinstance(game, TurtleSoupGame)
+                and game.phase == "ready"
+                and not game.processing
+                and state.seats
+                and state.turn_timeout_seconds
+            )
+            if not turn_active:
+                state.turn_deadline = 0.0
+                return
+            if not state.turn_deadline:
+                self._reset_turn_deadline(room, now=now)
+                return
+            if now < state.turn_deadline:
+                return
+            previous = room.visitors.get(state.current_token)
+            self._advance_multiplayer_turn(room, now=now)
+            current = room.visitors.get(state.current_token)
+            if previous and current and previous.token != current.token:
+                room.add_message(
+                    "system",
+                    f"{previous.number} 号回合超时，已轮到 {current.number} 号。",
+                )
+
+    def _configure_multiplayer(self, room: GameRoom) -> None:
+        """Apply the current game's seat policy without losing its primary player."""
+        if room.game_type == "turtle_soup":
+            if room.multiplayer.enabled:
+                room.multiplayer.capacity = self.turtle_soup_max_players
+                room.multiplayer.turn_timeout_seconds = self.multiplayer_turn_timeout
+                room.multiplayer.swap_cooldown_seconds = self.swap_request_cooldown
+                room.multiplayer.swap_request_expiry_seconds = self.swap_request_expiry
+                return
+            seats = (
+                [
+                    PlayerSeat(
+                        visitor_token=room.player_token,
+                        qq=room.player_qq,
+                        identity_confirmed=room.player_identity_confirmed,
+                    )
+                ]
+                if room.player_token
+                else []
+            )
+            room.multiplayer = MultiplayerState(
+                enabled=True,
+                capacity=self.turtle_soup_max_players,
+                turn_timeout_seconds=self.multiplayer_turn_timeout,
+                swap_cooldown_seconds=self.swap_request_cooldown,
+                swap_request_expiry_seconds=self.swap_request_expiry,
+                seats=seats,
+            )
+            self._sync_primary_player(room)
+            return
+        if room.multiplayer.enabled:
+            self._sync_primary_player(room)
+        room.multiplayer = MultiplayerState()
+
+    @staticmethod
+    def _clear_primary_player(room: GameRoom) -> None:
+        room.player_token = ""
+        room.player_qq = ""
+        room.player_identity_confirmed = False
+
+    def _sync_primary_player(self, room: GameRoom) -> None:
+        if not room.multiplayer.enabled or not room.multiplayer.seats:
+            self._clear_primary_player(room)
+            return
+        seat = room.multiplayer.seats[0]
+        room.player_token = seat.visitor_token
+        room.player_qq = seat.qq
+        room.player_identity_confirmed = seat.identity_confirmed
+
+    def _remove_multiplayer_seat(self, room: GameRoom, visitor_token: str) -> None:
+        state = room.multiplayer
+        old_index = next(
+            (
+                index
+                for index, seat in enumerate(state.seats)
+                if seat.visitor_token == visitor_token
+            ),
+            -1,
+        )
+        if old_index < 0:
+            raise ValueError("该访客当前不在玩家席")
+        was_current = old_index == state.current_turn_index
+        state.seats.pop(old_index)
+        if state.seats:
+            if old_index < state.current_turn_index:
+                state.current_turn_index -= 1
+            elif was_current:
+                state.current_turn_index %= len(state.seats)
+            else:
+                state.current_turn_index %= len(state.seats)
+        else:
+            state.current_turn_index = 0
+            state.turn_deadline = 0.0
+        state.swap_requests = {
+            key: item
+            for key, item in state.swap_requests.items()
+            if visitor_token not in {item.requester_token, item.target_token}
+        }
+
+    def _advance_multiplayer_turn(
+        self, room: GameRoom, *, now: float | None = None
+    ) -> None:
+        state = room.multiplayer
+        if not state.enabled or not state.seats:
+            return
+        current = time.time() if now is None else float(now)
+        count = len(state.seats)
+        start = state.current_turn_index % count
+        chosen = start
+        for offset in range(1, count + 1):
+            index = (start + offset) % count
+            visitor = room.visitors.get(state.seats[index].visitor_token)
+            if visitor and visitor.connected and current - visitor.last_seen_at < 15:
+                chosen = index
+                break
+        state.current_turn_index = chosen
+        self._reset_turn_deadline(room, now=current)
+
+    def _reset_turn_deadline(self, room: GameRoom, *, now: float | None = None) -> None:
+        state = room.multiplayer
+        game = room.game
+        if not state.enabled:
+            return
+        active = bool(
+            state.turn_timeout_seconds
+            and state.seats
+            and room.status == "active"
+            and isinstance(game, TurtleSoupGame)
+            and game.phase == "ready"
+            and not game.processing
+        )
+        state.turn_deadline = (
+            (time.time() if now is None else float(now)) + state.turn_timeout_seconds
+            if active
+            else 0.0
+        )
+
+    @staticmethod
+    def _purge_swap_requests(room: GameRoom, now: float) -> None:
+        state = room.multiplayer
+        state.swap_requests = {
+            key: item
+            for key, item in state.swap_requests.items()
+            if item.expires_at > now
+            and item.requester_token in room.visitors
+            and item.target_token in room.visitors
+        }
 
     def _purge_closed_access(self) -> None:
         now = time.time()
@@ -958,7 +1501,7 @@ class RoomManager:
         if isinstance(game, PigDiceGame):
             return game.winner == "human"
         if isinstance(game, TurtleSoupGame):
-            return game.solved
+            return game.winner == "human"
         if isinstance(game, XiangqiGame):
             return game.winner == game.human_side
         if isinstance(game, GomokuGame):
@@ -988,11 +1531,30 @@ class RoomManager:
         source: str,
         visitor_token: str,
         actor_qq: str,
-    ) -> None:
+    ) -> int:
+        expected_token = (
+            room.multiplayer.current_token
+            if room.multiplayer.enabled
+            else room.player_token
+        )
         if source == "web":
             visitor = self._visitor(room, visitor_token)
-            if visitor.token != room.player_token:
-                raise PermissionError("只有当前玩家可以推进海龟汤")
-            return
+            if visitor.token != expected_token:
+                raise PermissionError("还没有轮到你这个当前玩家推进海龟汤")
+            return visitor.number
+        if room.multiplayer.enabled:
+            seat = room.multiplayer.seat_for_qq(actor_qq)
+            if seat is None:
+                raise PermissionError("你的 QQ 尚未绑定到玩家席，请在 WebUI 操作")
+            if seat.visitor_token != expected_token:
+                raise PermissionError("还没有轮到你这个当前玩家推进海龟汤")
+            visitor = room.visitors.get(seat.visitor_token)
+            if visitor is None:
+                raise PermissionError("绑定的玩家席已经失效")
+            return visitor.number
         if not room.player_qq or str(actor_qq or "") != room.player_qq:
             raise PermissionError("只有当前玩家可以推进海龟汤")
+        player = room.player
+        if player is None:
+            raise PermissionError("当前玩家席已经失效")
+        return player.number

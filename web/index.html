@@ -48,6 +48,7 @@
           <div><dt>答案尝试</dt><dd id="soupAnswerCount">0</dd></div>
           <div><dt>关键事实</dt><dd id="soupFactCount">0 / 0</dd></div>
         </dl>
+        <p id="soupTurn" class="soup-turn" aria-live="polite"></p>
         <div id="soupHistory" class="soup-history" aria-live="polite"></div>
         <section id="soupSolution" class="soup-solution" hidden>
           <span class="label">完整汤底</span>
@@ -65,6 +66,9 @@
             </button>
             <button id="soupSubmitAction" class="primary-action compact" type="submit">
               <i data-lucide="send"></i><span>发送</span>
+            </button>
+            <button id="soupCorrectAction" class="secondary-action" type="button" hidden>
+              <i data-lucide="badge-check"></i><span>Bot 猜中了</span>
             </button>
           </footer>
         </form>

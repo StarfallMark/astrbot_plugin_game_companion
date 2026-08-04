@@ -98,6 +98,31 @@
       }
     }
   },
+  "multiplayer": {
+    "description": "多人席位",
+    "type": "object",
+    "hint": "当前由海龟汤使用；席位、轮换和交换协议也可供后续多人游戏复用。",
+    "items": {
+      "turn_timeout_seconds": {
+        "description": "每位玩家回合秒数",
+        "type": "int",
+        "default": 60,
+        "hint": "0 表示关闭回合倒计时；模型处理期间自动暂停。"
+      },
+      "swap_request_cooldown_seconds": {
+        "description": "观众交换申请冷却秒数",
+        "type": "int",
+        "default": 30,
+        "hint": "按申请者计时；0 表示不限制发送频率，但仍只能有一条待处理申请。"
+      },
+      "swap_request_expiry_seconds": {
+        "description": "交换申请有效秒数",
+        "type": "int",
+        "default": 20,
+        "hint": "过期申请由服务端自动清理。"
+      }
+    }
+  },
   "xiangqi": {
     "description": "中国象棋引擎",
     "type": "object",
@@ -146,6 +171,12 @@
         "options": ["all_ages", "normal", "unrestricted"],
         "labels": ["全年龄", "普通", "不限制"],
         "hint": "all_ages 为全年龄，normal 为普通悬疑，unrestricted 允许更沉重题材但仍遵守安全限制。"
+      },
+      "max_players": {
+        "description": "海龟汤最大玩家席数",
+        "type": "int",
+        "default": 6,
+        "hint": "0 表示不限制；普通房间可自行加入空席，管理员房间仍由游戏管理台安排。"
       }
     }
   },

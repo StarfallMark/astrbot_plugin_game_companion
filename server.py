@@ -98,6 +98,14 @@ class GameRoomServer:
         )
         app.router.add_post("/api/room/{access_token}/soup/answer", self._soup_answer)
         app.router.add_post("/api/room/{access_token}/soup/hint", self._soup_hint)
+        app.router.add_post("/api/room/{access_token}/soup/reverse", self._soup_reverse)
+        app.router.add_post("/api/room/{access_token}/soup/correct", self._soup_correct)
+        app.router.add_post(
+            "/api/room/{access_token}/seat/swap/request", self._seat_swap_request
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/seat/swap/respond", self._seat_swap_respond
+        )
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
         app.router.add_post("/api/room/{access_token}/leave", self._leave)
         return app
@@ -257,6 +265,62 @@ class GameRoomServer:
                 "hint": hint,
                 "room": room.public_snapshot(visitor_token),
             }
+        )
+
+    async def _soup_reverse(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        result = await self.plugin.submit_reverse_turtle_soup_turn(
+            room,
+            str(payload.get("text") or ""),
+            source="web",
+            visitor_token=visitor_token,
+        )
+        return self._response({**result, "room": room.public_snapshot(visitor_token)})
+
+    async def _soup_correct(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        await self.manager.confirm_reverse_turtle_soup_guess(
+            room, source="web", visitor_token=visitor_token
+        )
+        return self._response({"room": room.public_snapshot(visitor_token)})
+
+    async def _seat_swap_request(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        request_id = await self.manager.request_seat_swap(
+            room,
+            visitor_token,
+            int(payload.get("target_number") or 0),
+        )
+        return self._response(
+            {
+                "request_id": request_id,
+                "room": room.public_snapshot(visitor_token),
+            }
+        )
+
+    async def _seat_swap_respond(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        accepted = payload.get("accepted") is True
+        await self.manager.resolve_seat_swap(
+            room,
+            visitor_token,
+            str(payload.get("request_id") or ""),
+            accepted=accepted,
+        )
+        return self._response(
+            {"accepted": accepted, "room": room.public_snapshot(visitor_token)}
         )
 
     async def _leave(self, request: web.Request) -> web.Response:

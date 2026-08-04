@@ -9,7 +9,9 @@ from .gomoku import Difficulty
 
 SoupContentLevel = Literal["all_ages", "normal", "unrestricted"]
 SoupVerdict = Literal["yes", "no", "irrelevant", "partial", "compound"]
-SoupEntryKind = Literal["question", "answer", "hint"]
+SoupMode = Literal["bot_host", "player_host"]
+SoupEntryKind = Literal["question", "answer", "hint", "reverse"]
+SoupBotAction = Literal["question", "guess"]
 
 
 VERDICT_LABELS: dict[SoupVerdict, str] = {
@@ -56,6 +58,8 @@ class SoupEntry:
     response: str
     source: Literal["web", "qq", "system"]
     verdict: SoupVerdict | None = None
+    player_number: int | None = None
+    bot_action: SoupBotAction | None = None
     at: float = field(default_factory=time.time)
 
     def snapshot(self) -> dict[str, object]:
@@ -65,6 +69,8 @@ class SoupEntry:
             "response": self.response,
             "source": self.source,
             "verdict": self.verdict,
+            "player_number": self.player_number,
+            "bot_action": self.bot_action,
             "at": self.at,
         }
 
@@ -74,9 +80,11 @@ class TurtleSoupGame:
     difficulty: Difficulty
     max_hints: int
     content_level: SoupContentLevel
+    mode: SoupMode = "bot_host"
     puzzle: SoupPuzzle | None = None
     phase: Literal["preparing", "ready", "finished"] = "preparing"
     processing: bool = False
+    processing_player_number: int | None = None
     entries: list[SoupEntry] = field(default_factory=list)
     discovered_facts: set[int] = field(default_factory=set)
     question_count: int = 0
@@ -84,7 +92,15 @@ class TurtleSoupGame:
     hints_used: int = 0
     solved: bool = False
     gave_up: bool = False
+    bot_solved: bool = False
+    turn_count: int = 0
+    last_bot_action: SoupBotAction | None = None
+    last_bot_text: str = ""
     failure_reason: str = ""
+
+    def __post_init__(self) -> None:
+        if self.mode == "player_host" and self.phase == "preparing":
+            self.phase = "ready"
 
     @property
     def finished(self) -> bool:
@@ -98,6 +114,8 @@ class TurtleSoupGame:
     def winner(self) -> str:
         if not self.finished:
             return ""
+        if self.mode == "player_host":
+            return "bot"
         return "human" if self.solved else "bot"
 
     @property
@@ -105,6 +123,8 @@ class TurtleSoupGame:
         return self.entries
 
     def set_puzzle(self, puzzle: SoupPuzzle) -> None:
+        if self.mode != "bot_host":
+            raise ValueError("玩家出题模式不使用 Bot 题库")
         if self.phase != "preparing":
             raise ValueError("当前海龟汤已经完成出题")
         self.puzzle = puzzle
@@ -118,12 +138,13 @@ class TurtleSoupGame:
             raise ValueError("本题已经结束")
         if self.processing:
             raise ValueError("Bot 正在判断上一条内容")
-        if self.puzzle is None:
+        if self.mode == "bot_host" and self.puzzle is None:
             raise ValueError("题目尚未准备完成")
         self.processing = True
 
     def cancel_processing(self, reason: str = "") -> None:
         self.processing = False
+        self.processing_player_number = None
         self.failure_reason = str(reason or "")[:160]
 
     def record_question(
@@ -133,6 +154,7 @@ class TurtleSoupGame:
         *,
         source: Literal["web", "qq"],
         matched_facts: set[int] | None = None,
+        player_number: int | None = None,
     ) -> set[int]:
         if self.phase != "ready":
             raise ValueError("当前不能继续提问")
@@ -146,10 +168,12 @@ class TurtleSoupGame:
                 response=VERDICT_LABELS[verdict],
                 source=source,
                 verdict=verdict,
+                player_number=player_number,
             )
         )
         del self.entries[:-80]
         self.processing = False
+        self.processing_player_number = None
         self.failure_reason = ""
         return newly_discovered
 
@@ -160,6 +184,7 @@ class TurtleSoupGame:
         solved: bool,
         source: Literal["web", "qq"],
         matched_facts: set[int] | None = None,
+        player_number: int | None = None,
     ) -> set[int]:
         if self.phase != "ready":
             raise ValueError("当前不能提交答案")
@@ -175,17 +200,21 @@ class TurtleSoupGame:
                 prompt=answer,
                 response=response,
                 source=source,
+                player_number=player_number,
             )
         )
         del self.entries[:-80]
         self.processing = False
+        self.processing_player_number = None
         self.failure_reason = ""
         if solved:
             self.solved = True
             self.phase = "finished"
         return newly_discovered
 
-    def reveal_hint(self, *, source: Literal["web", "qq"]) -> str:
+    def reveal_hint(
+        self, *, source: Literal["web", "qq"], player_number: int | None = None
+    ) -> str:
         if self.phase != "ready" or self.puzzle is None:
             raise ValueError("当前不能申请提示")
         allowed = len(self.puzzle.hints)
@@ -196,26 +225,84 @@ class TurtleSoupGame:
         hint = self.puzzle.hints[self.hints_used]
         self.hints_used += 1
         self.entries.append(
-            SoupEntry(kind="hint", prompt="申请提示", response=hint, source=source)
+            SoupEntry(
+                kind="hint",
+                prompt="申请提示",
+                response=hint,
+                source=source,
+                player_number=player_number,
+            )
         )
         del self.entries[:-80]
         return hint
 
     def give_up(self, *, source: Literal["web", "qq"] = "qq") -> None:
-        if self.phase != "ready" or self.puzzle is None:
+        if self.phase != "ready" or (self.mode == "bot_host" and self.puzzle is None):
             raise ValueError("当前没有可以放弃的海龟汤")
         self.gave_up = True
         self.phase = "finished"
         self.processing = False
+        self.processing_player_number = None
         self.entries.append(
             SoupEntry(
                 kind="answer",
-                prompt="放弃并查看汤底",
-                response="本题已结束，汤底已经揭晓。",
+                prompt=(
+                    "结束玩家出题" if self.mode == "player_host" else "放弃并查看汤底"
+                ),
+                response=(
+                    "本题已结束。"
+                    if self.mode == "player_host"
+                    else "本题已结束，汤底已经揭晓。"
+                ),
                 source=source,
             )
         )
         del self.entries[:-80]
+
+    def record_reverse_turn(
+        self,
+        player_text: str,
+        *,
+        bot_action: SoupBotAction,
+        bot_text: str,
+        source: Literal["web", "qq"],
+        player_number: int | None = None,
+    ) -> None:
+        if self.mode != "player_host" or self.phase != "ready":
+            raise ValueError("当前不是玩家出题回合")
+        self.turn_count += 1
+        if bot_action == "question":
+            self.question_count += 1
+        else:
+            self.answer_attempts += 1
+        self.last_bot_action = bot_action
+        self.last_bot_text = bot_text
+        self.entries.append(
+            SoupEntry(
+                kind="reverse",
+                prompt=player_text,
+                response=bot_text,
+                source=source,
+                player_number=player_number,
+                bot_action=bot_action,
+            )
+        )
+        del self.entries[:-80]
+        self.processing = False
+        self.processing_player_number = None
+        self.failure_reason = ""
+
+    def confirm_bot_guess(self, *, correct: bool) -> None:
+        if self.mode != "player_host" or self.phase != "ready":
+            raise ValueError("当前不能判定 Bot 的猜测")
+        if self.last_bot_action != "guess":
+            raise ValueError("Bot 目前还没有提交可判定的猜测")
+        if correct:
+            self.bot_solved = True
+            self.solved = False
+            self.phase = "finished"
+        self.processing = False
+        self.processing_player_number = None
 
     def snapshot(self) -> dict[str, object]:
         reveal_solution = self.finished and self.puzzle is not None
@@ -225,6 +312,7 @@ class TurtleSoupGame:
         )
         return {
             "kind": "turtle_soup",
+            "mode": self.mode,
             "phase": self.phase,
             "preparing": self.phase == "preparing",
             "processing": self.processing,
@@ -241,6 +329,10 @@ class TurtleSoupGame:
             "key_fact_count": len(self.puzzle.key_facts) if self.puzzle else 0,
             "solved": self.solved,
             "gave_up": self.gave_up,
+            "bot_solved": self.bot_solved,
+            "turn_count": self.turn_count,
+            "last_bot_action": self.last_bot_action,
+            "last_bot_text": self.last_bot_text,
             "finished": self.finished,
         }
 
