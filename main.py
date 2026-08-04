@@ -53,7 +53,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.1.5"
+PLUGIN_VERSION = "0.1.6"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
@@ -254,14 +254,14 @@ class GameCompanionPlugin(Star):
     async def control_room_tool(self, event: AstrMessageEvent, **kwargs: Any) -> str:
         """处理用户在真实 QQ 会话中提出的游戏房间操作。
 
-        身份确认、抢占纠正、悔棋、暂停、继续、认输、再来一局、切换游戏和结束房间必须使用本工具，不能仅口头答应。
+        悔棋、暂停、继续、认输、再来一局、切换游戏和结束房间必须使用本工具，不能仅口头答应。
+        网页玩家身份只通过“绑定玩家 令牌”QQ 指令确认，本工具不能代替令牌绑定。
         悔棋是否同意由你结合人格决定，并通过 allow 表达决定。
         用户说“再来一局”时使用 rematch，保留原房间和链接，不得先 close 再创建房间。
 
         Args:
-            action(string): status、confirm_player、correct_player、undo、pause、resume、resign、rematch、switch_game、close。
+            action(string): status、undo、pause、resume、resign、rematch、switch_game、close。
             room_id(string): 可选房间编号；当前会话只有一个房间时可以留空。
-            visitor_number(number): correct_player 时创建者声明的浏览器序号。
             allow(boolean): undo 时你是否同意悔棋。
             difficulty(string): rematch 时你根据人格决定的新棋力，只能是 easy、normal、hard。
             game_type(string): switch_game 时切换到 gomoku、xiangqi、tictactoe、turtle_soup 或 pig_dice。
@@ -276,13 +276,9 @@ class GameCompanionPlugin(Star):
                     {"ok": True, "room": room.public_snapshot()}, ensure_ascii=False
                 )
             authorized = self._room_actor_authorized(room, actor_qq)
-            if action == "confirm_player":
-                await self.manager.confirm_creator(room, actor_qq)
-            elif action == "correct_player":
-                await self.manager.correct_creator(
-                    room, actor_qq, int(kwargs.get("visitor_number") or 0)
-                )
-            elif action == "undo":
+            if action in {"confirm_player", "correct_player"}:
+                raise ValueError("玩家身份只能使用 WebUI 的一次性令牌绑定")
+            if action == "undo":
                 if not authorized:
                     raise PermissionError("只有房主、当前玩家或游戏管理员能提出悔棋")
                 if not self._value_bool(kwargs.get("allow")):
@@ -511,6 +507,42 @@ class GameCompanionPlugin(Star):
         ]
         yield event.plain_result("\n".join(lines))
 
+    async def _bind_game_player_text(
+        self, event: AstrMessageEvent, identity_token: str
+    ) -> str:
+        """Bind a browser visitor to the QQ sender and return a short reply."""
+        try:
+            _room, visitor = await self.manager.bind_visitor_identity(
+                session_id=event.unified_msg_origin,
+                identity_token=identity_token,
+                qq=str(event.get_sender_id() or "").strip(),
+                display_name=str(event.get_sender_name() or "").strip(),
+            )
+        except (ValueError, RuntimeError, PermissionError) as exc:
+            return f"玩家身份绑定失败：{exc}"
+        label = (
+            f"{visitor.display_name}（{visitor.number}号）"
+            if visitor.display_name
+            else f"{visitor.number}号玩家"
+        )
+        return f"已将你绑定为本房间的 {label}。请回到网页点击“加入玩家席”。"
+
+    @filter.command("绑定玩家", alias={"绑定令牌"})
+    async def bind_game_player(self, event: AstrMessageEvent, identity_token: str):
+        """Bind a browser visitor using the one-time token shown in its WebUI."""
+        yield event.plain_result(
+            await self._bind_game_player_text(event, identity_token)
+        )
+
+    @filter.regex(r"^[A-HJ-NP-Za-hj-np-z2-9]{8}$")
+    async def bind_game_player_bare_token(self, event: AstrMessageEvent):
+        """Also accept a bare token when the user explicitly addresses the Bot."""
+        if not getattr(event, "is_at_or_wake_command", False):
+            return
+        yield event.plain_result(
+            await self._bind_game_player_text(event, event.message_str.strip())
+        )
+
     @filter.on_llm_request(priority=-10)
     async def inject_game_context(
         self, event: AstrMessageEvent, req: ProviderRequest
@@ -525,7 +557,9 @@ class GameCompanionPlugin(Star):
         ]
         for room in rooms:
             player = room.player
-            seat_numbers = room.public_snapshot().get("player_numbers", [])
+            public_room = room.public_snapshot()
+            seat_numbers = public_room.get("player_numbers", [])
+            seat_labels = public_room.get("player_labels", [])
             game = room.game
             progress = len(game.history) if game else 0
             progress_label = {
@@ -533,13 +567,14 @@ class GameCompanionPlugin(Star):
                 "pig_dice": "掷骰记录",
             }.get(room.game_type, "手数")
             lines.append(
-                "房间 {room_id}：游戏={game_type}，状态={status}，创建者QQ={creator}，玩家序号={number}，"
+                "房间 {room_id}：游戏={game_type}，状态={status}，创建者QQ={creator}，玩家={number}，"
                 "已确认身份={confirmed}，难度={difficulty}，{progress_label}={progress}。".format(
                     room_id=room.room_id,
                     game_type=self._game_label(room.game_type),
                     status=room.status,
                     creator=room.creator_qq,
-                    number=",".join(str(item) for item in seat_numbers)
+                    number=",".join(str(item) for item in seat_labels)
+                    or ",".join(str(item) for item in seat_numbers)
                     or (player.number if player else "无"),
                     confirmed=room.player_identity_confirmed,
                     difficulty=room.difficulty,
@@ -561,7 +596,7 @@ class GameCompanionPlugin(Star):
                     f"- {reply[:300].replace(chr(10), ' ')}" for reply in recent_replies
                 )
         lines.append(
-            "涉及身份、悔棋、暂停、认输、再来一局、切换游戏或结束时调用 game_companion_control_room；"
+            "涉及悔棋、暂停、认输、再来一局、切换游戏或结束时调用 game_companion_control_room；"
             "海龟汤中的是非提问、完整猜测、提示请求、玩家公开线索和确认 Bot 猜中必须调用 game_companion_turtle_soup；"
             "贪心骰子的掷骰和收手只在 WebUI 操作，不要通过 QQ 工具伪造点数；"
             "再来一局必须使用 rematch 并保留原房间，绝不能 close 后调用创建工具；"
@@ -676,7 +711,14 @@ class GameCompanionPlugin(Star):
 
         if isinstance(game, TurtleSoupGame):
             if game.mode == "player_host":
-                current_number = room.public_snapshot().get("current_player_number")
+                snapshot = room.public_snapshot()
+                current_number = snapshot.get("current_player_number")
+                current_name = snapshot.get("current_player_name")
+                current_label = (
+                    f"{current_name}（{current_number}号）"
+                    if current_name and current_number
+                    else f"{current_number}号" if current_number else "未知"
+                )
                 recent = [
                     f"玩家线索/回答：{entry.prompt}；Bot {('猜测' if entry.bot_action == 'guess' else '提问')}：{entry.response}"
                     for entry in game.entries[-2:]
@@ -685,16 +727,25 @@ class GameCompanionPlugin(Star):
                 lines.append(
                     f"实时进度：玩家出题、Bot 猜，公开回合 {game.turn_count} 次，"
                     f"Bot 提问 {game.question_count} 次、猜测 {game.answer_attempts} 次，"
-                    f"当前轮到 {current_number or '未知'} 号玩家。Bot 不知道未公开汤底。"
+                    f"当前轮到 {current_label} 玩家。Bot 不知道未公开汤底。"
                 )
                 lines.extend(recent)
                 return lines
             puzzle = game.puzzle
             title = puzzle.title if puzzle else "出题中"
+            snapshot = room.public_snapshot()
+            current_number = snapshot.get("current_player_number")
+            current_name = snapshot.get("current_player_name")
+            current_label = (
+                f"{current_name}（{current_number}号）"
+                if current_name and current_number
+                else f"{current_number}号" if current_number else "未知"
+            )
             lines.append(
                 f"实时进度：题目《{title}》，提问 {game.question_count} 次，"
                 f"提示 {game.hints_used} 次，发现公开关键进度 {len(game.discovered_facts)}/"
-                f"{len(puzzle.key_facts) if puzzle else 0}。不得推测或泄露隐藏汤底。"
+                f"{len(puzzle.key_facts) if puzzle else 0}，当前轮到 {current_label}。"
+                "不得推测或泄露隐藏汤底。"
             )
         return lines
 
@@ -1395,7 +1446,10 @@ class GameCompanionPlugin(Star):
                     content=summary,
                     experience_type="game",
                     user_id=player_qq,
-                    user_name=room.creator_name if player_qq == room.creator_qq else "",
+                    user_name=room.participant_names.get(
+                        player_qq,
+                        room.creator_name if player_qq == room.creator_qq else "",
+                    ),
                     scope=room.source,
                     session_id=room.session_id,
                     platform=room.platform,
@@ -1613,6 +1667,18 @@ class GameCompanionPlugin(Star):
 
     def _room_link_instruction(self, room: GameRoom) -> str:
         instruction = "最终回复必须完整保留 room_url；"
+        if room.admin_room:
+            instruction += "这是管理员审核房间，访客需要由管理员在游戏管理台安排玩家。"
+        else:
+            bind_hint = (
+                "在原群聊中 @Bot 发送"
+                if room.source == "group"
+                else "在原私聊中发送"
+            )
+            instruction += (
+                f"提醒用户打开页面后查看一次性 QQ 绑定令牌，并{bind_hint}“绑定玩家 令牌”，"
+                "绑定成功后再点击加入玩家席。"
+            )
         if room.game_type == "turtle_soup":
             instruction += "说明玩家进入玩家席后由 Bot 准备题目。"
         elif room.game_type == "pig_dice":

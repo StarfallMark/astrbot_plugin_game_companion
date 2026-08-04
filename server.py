@@ -170,13 +170,15 @@ class GameRoomServer:
         self._require_origin(request)
         room = self._room(request)
         payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        await self.manager.require_visitor_identity(room, visitor_token)
         await self.manager.claim_and_start(
             room,
-            str(payload.get("visitor_token") or ""),
+            visitor_token,
             str(payload.get("side") or "human_black"),
         )
         return self._response(
-            {"room": room.public_snapshot(str(payload.get("visitor_token") or ""))}
+            {"room": room.public_snapshot(visitor_token)}
         )
 
     async def _start_game(self, request: web.Request) -> web.Response:
@@ -184,6 +186,7 @@ class GameRoomServer:
         room = self._room(request)
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
+        await self.manager.require_visitor_identity(room, visitor_token)
         await self.manager.start_game(
             room, visitor_token, str(payload.get("side") or "human_black")
         )

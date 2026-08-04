@@ -185,7 +185,11 @@
     if (!room) return;
     document.getElementById("roomId").textContent = room.room_id || "";
     document.getElementById("roomStatus").textContent = statusLabel(room.status);
-    document.getElementById("visitorLabel").textContent = room.visitor_number ? `${room.visitor_number} 号` : "访客";
+    document.getElementById("visitorLabel").textContent = room.visitor_number
+      ? (room.visitor_display_name
+        ? `${room.visitor_display_name}（${room.visitor_number}号）`
+        : `${room.visitor_number} 号`)
+      : "访客";
     const pigDice = room.game_type === "pig_dice";
     document.getElementById("difficulty").textContent = pigDice
       ? ({ easy: "稳健", normal: "均衡", hard: "大胆" }[room.difficulty] || "均衡")
@@ -213,12 +217,24 @@
     const badge = document.getElementById("seatBadge");
     const action = document.getElementById("seatAction");
     const note = document.getElementById("seatNote");
+    const identityChallenge = document.getElementById("identityChallenge");
+    const identityToken = document.getElementById("identityToken");
+    const identityTokenNote = document.getElementById("identityTokenNote");
     const sideChoice = document.getElementById("sideChoice");
     badge.textContent = room.is_player ? "玩家席" : "观众席";
     badge.className = `seat-badge ${room.is_player ? "player" : ""}`;
     sideChoice.hidden = ["turtle_soup", "pig_dice"].includes(room.game_type) || !(["waiting", "setup", "finished"].includes(room.status));
     action.hidden = false;
     action.disabled = busy;
+    const identityRequired = !room.admin_room && !room.player_confirmed;
+    identityChallenge.hidden = !identityRequired;
+    if (identityRequired) {
+      identityToken.textContent = room.identity_token || "--------";
+      identityTokenNote.textContent = room.identity_token
+        ? (room.source === "group" ? "请在原群聊中 @Bot 直接发送令牌，或发送：" : "请在原私聊中发送令牌，或发送：")
+          + "绑定玩家 " + room.identity_token
+        : "令牌已过期，刷新页面后重新获取";
+    }
     if (!room.is_player && room.admin_room) {
       action.innerHTML = '<i data-lucide="clock-3"></i><span>等待管理员安排</span>';
       action.disabled = true;
@@ -227,9 +243,11 @@
       action.innerHTML = '<i data-lucide="log-in"></i><span>加入对局</span>';
       const capacity = Number(room.player_capacity || 1);
       const full = capacity > 0 && (room.player_numbers || []).length >= capacity;
-      action.disabled = busy || full;
+      action.disabled = busy || full || identityRequired;
       note.textContent = full
         ? "玩家席已满，可向席内玩家申请交换。"
+        : identityRequired
+        ? "请先用页面令牌在 QQ 中绑定身份。"
         : room.multiplayer_enabled
         ? `玩家席 ${room.player_numbers?.length || 0} / ${capacity || "不限"}，加入后按顺序轮流操作。`
         : room.player_number ? `${room.player_number} 号正在玩家席。` : "第一个加入玩家席的人开始对局。";
@@ -241,7 +259,7 @@
         : room.game_type === "pig_dice"
         ? '<i data-lucide="dice-5"></i><span>开始掷骰</span>'
         : '<i data-lucide="play"></i><span>开始新一局</span>';
-      note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不写入长期记忆。";
+      note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不允许进入玩家席。";
     } else if (room.status === "finished") {
       action.innerHTML = room.game_type === "turtle_soup"
         ? `<i data-lucide="rotate-ccw"></i><span>${room.turtle_soup_mode === "player_host" ? "申请再出一题" : "申请再来一道"}</span>`
@@ -253,7 +271,7 @@
       note.textContent = "";
     } else {
       action.hidden = true;
-      note.textContent = room.player_confirmed ? "身份已确认。" : "可在 QQ 中确认当前玩家身份。";
+      note.textContent = room.player_confirmed ? "身份已确认。" : "请先在 QQ 中绑定页面令牌。";
     }
   }
 
@@ -265,13 +283,13 @@
     visitors.forEach((visitor) => {
       const chip = document.createElement("span");
       chip.className = `person-chip ${visitor.online ? "online" : ""} ${visitor.is_player ? "player" : ""}`;
-      chip.textContent = `${visitor.number} 号${visitor.is_player ? " · 玩家" : ""}`;
+      chip.textContent = `${visitor.display_name ? `${visitor.display_name}（${visitor.number}号）` : `${visitor.number}号`}${visitor.is_player ? " · 玩家" : ""}`;
       if (room.multiplayer_enabled && !room.is_player && visitor.is_player) {
         const request = document.createElement("button");
         request.type = "button";
         request.textContent = "申请交换";
         const cooldown = Number(room.swap_cooldown_until || 0);
-        request.disabled = Boolean(room.outgoing_swap_request) || (cooldown && cooldown > (room.server_time || Date.now() / 1000));
+        request.disabled = !room.player_confirmed || Boolean(room.outgoing_swap_request) || (cooldown && cooldown > (room.server_time || Date.now() / 1000));
         request.addEventListener("click", () => requestSeatSwap(visitor.number));
         chip.appendChild(request);
       }
@@ -386,8 +404,11 @@
     const remaining = room.turn_deadline
       ? Math.max(0, Math.ceil(room.turn_deadline - Number(room.server_time || 0)))
       : 0;
+    const currentPlayerLabel = room.current_player_name
+      ? `${room.current_player_name}（${room.current_player_number}号）`
+      : (room.current_player_number ? `${room.current_player_number}号` : "未知玩家");
     turn.textContent = room.current_player_number
-      ? `当前轮到 ${room.current_player_number} 号${remaining ? ` · 剩余 ${remaining} 秒` : ""}${room.is_current_player ? " · 轮到你" : ""}`
+      ? `当前轮到 ${currentPlayerLabel}${remaining ? ` · 剩余 ${remaining} 秒` : ""}${room.is_current_player ? " · 轮到你" : ""}`
       : "等待玩家加入";
 
     const history = document.getElementById("soupHistory");
@@ -618,7 +639,7 @@
             : room.status === "paused"
               ? "已经暂停"
               : game?.phase === "ready"
-                ? `轮到 ${room.current_player_number || "?"} 号${game?.mode === "player_host" ? "给线索" : "提问"}`
+                ? `轮到 ${room.current_player_name ? `${room.current_player_name}（${room.current_player_number}号）` : `${room.current_player_number || "?"}号`}${game?.mode === "player_host" ? "给线索" : "提问"}`
                 : statusLabel(room.status);
       return;
     }

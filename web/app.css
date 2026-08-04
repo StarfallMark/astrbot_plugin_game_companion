@@ -356,6 +356,10 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
 .difficulty { padding: 4px 7px; border-radius: 4px; background: #e8f0eb; color: #215c45; font-size: 12px; }
 
 .seat-panel, .people-panel, .messages-panel { padding: 14px; }
+.identity-challenge { display: grid; gap: 5px; margin: 12px 0 10px; padding: 10px; border: 1px dashed #c5cec8; border-radius: 5px; background: #f6f8f6; }
+.identity-challenge[hidden] { display: none; }
+.identity-challenge code { letter-spacing: .12em; color: #215c45; font-size: 18px; font-weight: 800; }
+.identity-challenge small { color: #707873; font-size: 11px; line-height: 1.4; }
 .section-head { justify-content: space-between; gap: 12px; }
 .section-head > svg { width: 18px; color: #6a746e; }
 .seat-badge { padding: 4px 7px; border-radius: 4px; background: #eceeed; color: #555e58; font-size: 12px; }

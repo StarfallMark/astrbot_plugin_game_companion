@@ -160,7 +160,10 @@
         const chip = document.createElement("span");
         chip.className = `visitor ${visitor.online ? "online" : ""} ${visitor.is_player ? "player" : ""}`;
         const dot = document.createElement("i");
-        chip.append(dot, document.createTextNode(`${visitor.number} 号${visitor.is_player ? " · 玩家" : ""}${visitor.is_current_player ? " · 当前" : ""}`));
+        const visitorLabel = visitor.display_name
+          ? `${visitor.display_name}（${visitor.number}号）`
+          : `${visitor.number}号`;
+        chip.append(dot, document.createTextNode(`${visitorLabel}${visitor.player_qq ? ` · QQ ${visitor.player_qq}` : ""}${visitor.is_player ? " · 玩家" : ""}${visitor.is_current_player ? " · 当前" : ""}`));
         if (visitor.is_player) {
           const demote = document.createElement("button");
           demote.type = "button";
@@ -209,7 +212,8 @@
 
       const player = document.createElement("td");
       const playerNumbers = Array.isArray(room.player_numbers) ? room.player_numbers : [];
-      player.append(createText("strong", playerNumbers.length ? playerNumbers.map((number) => `${number} 号`).join("、") : "未安排"));
+      const playerLabels = Array.isArray(room.player_labels) ? room.player_labels : [];
+      player.append(createText("strong", playerLabels.length ? playerLabels.join("、") : playerNumbers.length ? playerNumbers.map((number) => `${number}号`).join("、") : "未安排"));
       player.append(createText("small", room.player_capacity > 1 || room.player_capacity === 0
         ? `${playerNumbers.length} / ${room.player_capacity || "不限"} 席`
         : (room.player_qq ? `QQ ${room.player_qq}` : "尚未绑定 QQ")));
@@ -343,7 +347,7 @@
     (room.visitors || []).forEach((visitor) => {
       const option = document.createElement("option");
       option.value = visitor.number;
-      option.textContent = `${visitor.number} 号${visitor.online ? " · 在线" : " · 离线"}`;
+      option.textContent = `${visitor.display_name ? `${visitor.display_name}（${visitor.number}号）` : `${visitor.number}号`}${visitor.online ? " · 在线" : " · 离线"}`;
       select.appendChild(option);
     });
     const syncQq = () => {

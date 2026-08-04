@@ -70,6 +70,65 @@ async def test_turtle_soup_uses_reusable_multiplayer_seats_and_capacity() -> Non
 
 
 @pytest.mark.asyncio
+async def test_browser_identity_token_binds_qq_and_nickname_before_seating() -> None:
+    manager = RoomManager(turtle_soup_max_players=2)
+    room = await make_room(manager)
+    visitor = await manager.join(room)
+    snapshot = room.public_snapshot(visitor.token)
+    identity_token = snapshot["identity_token"]
+    assert identity_token
+
+    bound_room, bound = await manager.bind_visitor_identity(
+        session_id=room.session_id,
+        identity_token=str(identity_token),
+        qq="10002",
+        display_name="群名片小明",
+    )
+    assert bound_room is room
+    assert bound.qq == "10002"
+    assert bound.display_name == "群名片小明"
+    assert room.public_snapshot(visitor.token)["identity_token"] == ""
+
+    await manager.claim_and_start(room, visitor.token, "")
+    public = room.public_snapshot(visitor.token)
+    assert public["player_labels"] == ["群名片小明（1号）"]
+    assert public["current_player_name"] == "群名片小明"
+    assert room.player_qq == "10002"
+    assert room.participant_names == {"10002": "群名片小明"}
+
+    with pytest.raises(ValueError, match="无效|使用"):
+        await manager.bind_visitor_identity(
+            session_id=room.session_id,
+            identity_token=str(identity_token),
+            qq="10003",
+            display_name="另一个人",
+        )
+
+
+@pytest.mark.asyncio
+async def test_same_qq_cannot_bind_two_browser_visitors_in_one_room() -> None:
+    manager = RoomManager()
+    room = await make_room(manager)
+    first = await manager.join(room)
+    second = await manager.join(room)
+    first_token = room.public_snapshot(first.token)["identity_token"]
+    second_token = room.public_snapshot(second.token)["identity_token"]
+    await manager.bind_visitor_identity(
+        session_id=room.session_id,
+        identity_token=str(first_token),
+        qq="10002",
+        display_name="小明",
+    )
+    with pytest.raises(ValueError, match="其他访客"):
+        await manager.bind_visitor_identity(
+            session_id=room.session_id,
+            identity_token=str(second_token),
+            qq="10002",
+            display_name="小明",
+        )
+
+
+@pytest.mark.asyncio
 async def test_valid_action_rotates_turn_and_timeout_skips_offline_player() -> None:
     manager = RoomManager(turtle_soup_max_players=3, multiplayer_turn_timeout=60)
     room = await make_room(manager)

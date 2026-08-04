@@ -43,6 +43,7 @@ class RoomManager:
     MAX_CLOSED_ACCESS_RECORDS = 256
     FINISHED_PLAYER_LEAVE_GRACE_SECONDS = 8
     FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS = 60
+    IDENTITY_TOKEN_TTL_SECONDS = 300
 
     def __init__(
         self,
@@ -149,6 +150,85 @@ class RoomManager:
             visitor.connected = True
             visitor.last_seen_at = time.time()
             visitor.left_at = None
+            visitor.ensure_binding_token(ttl=self.IDENTITY_TOKEN_TTL_SECONDS)
+            return visitor
+
+    async def bind_visitor_identity(
+        self,
+        *,
+        session_id: str,
+        identity_token: str,
+        qq: str,
+        display_name: str = "",
+    ) -> tuple[GameRoom, Visitor]:
+        """Consume a browser challenge from the matching QQ conversation."""
+        normalized_token = str(identity_token or "").strip().upper()
+        normalized_qq = str(qq or "").strip()
+        if not normalized_token:
+            raise ValueError("身份令牌不能为空")
+        if not normalized_qq.isdigit():
+            raise ValueError("发送者 QQ 号无效")
+        now = time.time()
+        candidates = [
+            room
+            for room in self.rooms.values()
+            if room.session_id == str(session_id or "")
+        ]
+        for room in candidates:
+            async with room.lock:
+                if room.admin_room:
+                    continue
+                visitor = next(
+                    (
+                        item
+                        for item in room.visitors.values()
+                        if item.binding_token
+                        and secrets.compare_digest(
+                            item.binding_token.upper(), normalized_token
+                        )
+                        and item.binding_expires_at > now
+                    ),
+                    None,
+                )
+                if visitor is None:
+                    continue
+                existing = next(
+                    (
+                        item
+                        for item in room.visitors.values()
+                        if item.identity_confirmed
+                        and item.qq == normalized_qq
+                        and item.token != visitor.token
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    raise ValueError("这个 QQ 已经绑定了本房间的其他访客")
+                visitor.qq = normalized_qq
+                visitor.display_name = str(display_name or "").strip()[:40]
+                visitor.identity_confirmed = True
+                visitor.binding_token = ""
+                visitor.binding_expires_at = 0.0
+                seat = room.multiplayer.seat_for_token(visitor.token)
+                if seat is not None:
+                    seat.qq = visitor.qq
+                    seat.display_name = visitor.display_name
+                    seat.identity_confirmed = True
+                    room.confirmed_participant_qqs.add(visitor.qq)
+                    room.participant_names[visitor.qq] = visitor.display_name
+                    self._sync_primary_player(room)
+                room.touch()
+                return room, visitor
+        raise ValueError("身份令牌无效、已使用或已过期")
+
+    async def require_visitor_identity(
+        self, room: GameRoom, visitor_token: str
+    ) -> Visitor:
+        """Require a browser visitor to have completed QQ binding."""
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if not visitor.identity_confirmed:
+                raise PermissionError("请先在 QQ 中绑定页面令牌，再进入玩家席")
             return visitor
 
     async def heartbeat(self, room: GameRoom, visitor_token: str) -> None:
@@ -158,6 +238,7 @@ class RoomManager:
             visitor.connected = True
             visitor.last_seen_at = time.time()
             visitor.left_at = None
+            visitor.ensure_binding_token(ttl=self.IDENTITY_TOKEN_TTL_SECONDS)
 
     async def leave(self, room: GameRoom, visitor_token: str) -> None:
         """Record a browser departure without extending meaningful activity."""
@@ -187,9 +268,14 @@ class RoomManager:
                 room.multiplayer.seats.append(
                     PlayerSeat(
                         visitor_token=visitor.token,
-                        qq=room.creator_qq if first else "",
+                        qq=visitor.qq if visitor.identity_confirmed else "",
+                        display_name=visitor.display_name,
+                        identity_confirmed=visitor.identity_confirmed,
                     )
                 )
+                if visitor.identity_confirmed:
+                    room.confirmed_participant_qqs.add(visitor.qq)
+                    room.participant_names[visitor.qq] = visitor.display_name
                 self._sync_primary_player(room)
                 room.player_empty_since = None
                 room.touch()
@@ -197,7 +283,9 @@ class RoomManager:
                     room.status = "setup"
                     start_required = True
                 else:
-                    room.add_message("system", f"{visitor.number} 号加入了玩家席。")
+                    room.add_message(
+                        "system", f"{self._visitor_label(visitor)}加入了玩家席。"
+                    )
                 self._reset_turn_deadline(room)
             else:
                 if room.player_token and room.player_token != visitor.token:
@@ -205,7 +293,11 @@ class RoomManager:
                 if room.player_seat_locked and room.player_token != visitor.token:
                     raise ValueError("玩家席已由创建者锁定")
                 room.player_token = visitor.token
-                room.player_qq = room.creator_qq
+                room.player_qq = visitor.qq if visitor.identity_confirmed else ""
+                room.player_identity_confirmed = visitor.identity_confirmed
+                if visitor.identity_confirmed:
+                    room.confirmed_participant_qqs.add(visitor.qq)
+                    room.participant_names[visitor.qq] = visitor.display_name
                 room.player_empty_since = None
                 room.status = "setup"
                 room.touch()
@@ -224,6 +316,13 @@ class RoomManager:
             player_qq = str(player_qq or "").strip()
             if not player_qq.isdigit():
                 raise ValueError("玩家 QQ 号必须只包含数字")
+            if any(
+                item.identity_confirmed
+                and item.qq == player_qq
+                and item.token != visitor.token
+                for item in room.visitors.values()
+            ):
+                raise ValueError("这个 QQ 已经绑定了本房间的其他访客")
             if room.multiplayer.enabled:
                 seat = room.multiplayer.seat_for_token(visitor.token)
                 if seat is None:
@@ -235,8 +334,17 @@ class RoomManager:
                     seat = PlayerSeat(visitor_token=visitor.token)
                     room.multiplayer.seats.append(seat)
                 seat.qq = player_qq
+                seat.display_name = visitor.display_name
                 seat.identity_confirmed = True
+                visitor.qq = player_qq
+                if not visitor.display_name and player_qq == room.creator_qq:
+                    visitor.display_name = room.creator_name
+                    seat.display_name = visitor.display_name
+                visitor.identity_confirmed = True
+                visitor.binding_token = ""
+                visitor.binding_expires_at = 0.0
                 room.confirmed_participant_qqs.add(player_qq)
+                room.participant_names[player_qq] = visitor.display_name
                 first = room.player_token == ""
                 self._sync_primary_player(room)
                 room.player_seat_locked = True
@@ -251,7 +359,14 @@ class RoomManager:
                 room.player_token = visitor.token
                 room.player_qq = player_qq
                 room.player_identity_confirmed = True
+                visitor.qq = player_qq
+                if not visitor.display_name and player_qq == room.creator_qq:
+                    visitor.display_name = room.creator_name
+                visitor.identity_confirmed = True
+                visitor.binding_token = ""
+                visitor.binding_expires_at = 0.0
                 room.confirmed_participant_qqs.add(player_qq)
+                room.participant_names[player_qq] = visitor.display_name
                 room.player_seat_locked = True
                 room.player_empty_since = None
                 room.game = None
@@ -282,6 +397,7 @@ class RoomManager:
                 creator_seat = PlayerSeat(
                     visitor_token=visitor.token,
                     qq=room.creator_qq,
+                    display_name=visitor.display_name,
                     identity_confirmed=True,
                 )
                 if seats:
@@ -289,7 +405,18 @@ class RoomManager:
                     seats[0] = creator_seat
                     if target_index > 0:
                         seats[target_index] = PlayerSeat(
-                            visitor_token=previous_primary.visitor_token
+                            visitor_token=previous_primary.visitor_token,
+                            qq=room.visitors.get(previous_primary.visitor_token).qq
+                            if room.visitors.get(previous_primary.visitor_token)
+                            and room.visitors.get(previous_primary.visitor_token).identity_confirmed
+                            else "",
+                            display_name=room.visitors.get(previous_primary.visitor_token).display_name
+                            if room.visitors.get(previous_primary.visitor_token)
+                            else "",
+                            identity_confirmed=bool(
+                                room.visitors.get(previous_primary.visitor_token)
+                                and room.visitors.get(previous_primary.visitor_token).identity_confirmed
+                            ),
                         )
                 else:
                     seats.append(creator_seat)
@@ -297,11 +424,17 @@ class RoomManager:
                 room.multiplayer.swap_requests.clear()
                 self._sync_primary_player(room)
                 room.confirmed_participant_qqs.add(room.creator_qq)
+                room.participant_names[room.creator_qq] = (
+                    visitor.display_name or room.creator_name
+                )
             else:
                 room.player_token = visitor.token
                 room.player_qq = room.creator_qq
                 room.player_identity_confirmed = True
                 room.confirmed_participant_qqs.add(room.creator_qq)
+                room.participant_names[room.creator_qq] = (
+                    visitor.display_name or room.creator_name
+                )
             room.player_seat_locked = True
             room.player_empty_since = None
             room.game = None
@@ -325,13 +458,30 @@ class RoomManager:
                 if seat is None:
                     raise ValueError("当前还没有主玩家席")
                 seat.qq = room.creator_qq
+                seat.display_name = room.creator_name
                 seat.identity_confirmed = True
+                player = room.visitors.get(seat.visitor_token)
+                if player is not None:
+                    player.qq = room.creator_qq
+                    player.display_name = room.creator_name
+                    player.identity_confirmed = True
+                    player.binding_token = ""
+                    player.binding_expires_at = 0.0
                 room.confirmed_participant_qqs.add(room.creator_qq)
+                room.participant_names[room.creator_qq] = room.creator_name
                 self._sync_primary_player(room)
             else:
                 room.player_qq = room.creator_qq
                 room.player_identity_confirmed = True
+                player = room.player
+                if player is not None:
+                    player.qq = room.creator_qq
+                    player.display_name = room.creator_name
+                    player.identity_confirmed = True
+                    player.binding_token = ""
+                    player.binding_expires_at = 0.0
                 room.confirmed_participant_qqs.add(room.creator_qq)
+                room.participant_names[room.creator_qq] = room.creator_name
             room.player_seat_locked = True
             room.touch()
         await self._emit("player_confirmed", room, {})
@@ -1078,6 +1228,8 @@ class RoomManager:
                 return False
             if requester is None or state.seat_for_token(requester.token) is not None:
                 raise ValueError("申请者已经离开或身份已经变化")
+            if not room.admin_room and not requester.identity_confirmed:
+                raise PermissionError("申请者需要先在 QQ 中绑定页面令牌")
             target_index = next(
                 (
                     index
@@ -1088,7 +1240,15 @@ class RoomManager:
             )
             if target_index < 0:
                 raise ValueError("目标玩家已经不在玩家席")
-            state.seats[target_index] = PlayerSeat(visitor_token=requester.token)
+            state.seats[target_index] = PlayerSeat(
+                visitor_token=requester.token,
+                qq=requester.qq if requester.identity_confirmed else "",
+                display_name=requester.display_name,
+                identity_confirmed=requester.identity_confirmed,
+            )
+            if requester.identity_confirmed:
+                room.confirmed_participant_qqs.add(requester.qq)
+                room.participant_names[requester.qq] = requester.display_name
             state.swap_requests = {
                 key: item
                 for key, item in state.swap_requests.items()
@@ -1099,7 +1259,7 @@ class RoomManager:
             self._reset_turn_deadline(room, now=current)
             room.add_message(
                 "system",
-                f"{requester.number} 号与 {visitor.number} 号完成席位交换。",
+                f"{self._visitor_label(requester)}与 {self._visitor_label(visitor)}完成席位交换。",
             )
             room.touch()
         await self._emit("seats_changed", room, {"swapped": True})
@@ -1301,7 +1461,7 @@ class RoomManager:
             if previous and current and previous.token != current.token:
                 room.add_message(
                     "system",
-                    f"{previous.number} 号回合超时，已轮到 {current.number} 号。",
+                    f"{self._visitor_label(previous)}回合超时，已轮到 {self._visitor_label(current)}。",
                 )
 
     def _configure_multiplayer(self, room: GameRoom) -> None:
@@ -1318,6 +1478,11 @@ class RoomManager:
                     PlayerSeat(
                         visitor_token=room.player_token,
                         qq=room.player_qq,
+                        display_name=(
+                            room.visitors.get(room.player_token).display_name
+                            if room.visitors.get(room.player_token)
+                            else ""
+                        ),
                         identity_confirmed=room.player_identity_confirmed,
                     )
                 ]
@@ -1337,6 +1502,14 @@ class RoomManager:
         if room.multiplayer.enabled:
             self._sync_primary_player(room)
         room.multiplayer = MultiplayerState()
+
+    @staticmethod
+    def _visitor_label(visitor: Visitor) -> str:
+        return (
+            f"{visitor.display_name}（{visitor.number}号）"
+            if visitor.display_name
+            else f"{visitor.number}号"
+        )
 
     @staticmethod
     def _clear_primary_player(room: GameRoom) -> None:

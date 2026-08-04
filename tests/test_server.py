@@ -152,6 +152,49 @@ async def test_same_origin_leave_beacon_records_browser_departure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_browser_cannot_claim_player_seat_before_qq_binding() -> None:
+    server = make_server(0)
+    room = await server.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        difficulty="normal",
+    )
+    visitor = await server.manager.join(room)
+    app = server._build_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            f"/api/room/{room.access_token}/claim",
+            json={"visitor_token": visitor.token, "side": "human_black"},
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+        payload = await response.json()
+
+        identity_token = room.public_snapshot(visitor.token)["identity_token"]
+        await server.manager.bind_visitor_identity(
+            session_id=room.session_id,
+            identity_token=str(identity_token),
+            qq="10002",
+            display_name="测试玩家",
+        )
+        bound_response = await client.post(
+            f"/api/room/{room.access_token}/claim",
+            json={"visitor_token": visitor.token, "side": "human_black"},
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+
+    assert response.status == 403
+    assert payload["status"] == "error"
+    assert "绑定页面令牌" in payload["message"]
+    assert bound_response.status == 200
+    assert room.player_qq == "10002"
+
+
+@pytest.mark.asyncio
 async def test_xiangqi_move_endpoint_accepts_start_and_end_coordinates() -> None:
     server = make_server(0)
     server.manager.xiangqi_engine = EndingXiangqiEngine()  # type: ignore[assignment]

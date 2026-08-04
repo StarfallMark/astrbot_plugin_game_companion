@@ -41,6 +41,7 @@ class PlayerSeat:
 
     visitor_token: str
     qq: str = ""
+    display_name: str = ""
     identity_confirmed: bool = False
     seated_at: float = field(default_factory=time.time)
 
@@ -86,7 +87,11 @@ class MultiplayerState:
 
     def seat_for_qq(self, qq: str) -> PlayerSeat | None:
         return next(
-            (seat for seat in self.seats if seat.qq and seat.qq == str(qq or "")),
+            (
+                seat
+                for seat in self.seats
+                if seat.identity_confirmed and seat.qq and seat.qq == str(qq or "")
+            ),
             None,
         )
 
@@ -101,6 +106,27 @@ class Visitor:
     last_seen_at: float = field(default_factory=time.time)
     left_at: float | None = None
     connected: bool = True
+    qq: str = ""
+    display_name: str = ""
+    identity_confirmed: bool = False
+    binding_token: str = ""
+    binding_expires_at: float = 0.0
+
+    BINDING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+    def ensure_binding_token(self, *, now: float | None = None, ttl: int = 300) -> None:
+        """Create a short-lived challenge only while this visitor is unbound."""
+        if self.identity_confirmed:
+            self.binding_token = ""
+            self.binding_expires_at = 0.0
+            return
+        current = time.time() if now is None else float(now)
+        if self.binding_token and self.binding_expires_at > current:
+            return
+        self.binding_token = "".join(
+            secrets.choice(self.BINDING_ALPHABET) for _index in range(8)
+        )
+        self.binding_expires_at = current + max(1, int(ttl))
 
     def public_snapshot(
         self, *, is_player: bool, is_current_player: bool = False
@@ -111,6 +137,8 @@ class Visitor:
             "online": self.connected and time.time() - self.last_seen_at < 15,
             "is_player": is_player,
             "is_current_player": is_current_player,
+            "display_name": self.display_name if self.identity_confirmed else "",
+            "identity_confirmed": self.identity_confirmed,
         }
 
 
@@ -141,6 +169,7 @@ class GameRoom:
     player_identity_confirmed: bool = False
     player_seat_locked: bool = False
     confirmed_participant_qqs: set[str] = field(default_factory=set)
+    participant_names: dict[str, str] = field(default_factory=dict)
     multiplayer: MultiplayerState = field(default_factory=MultiplayerState)
     game: (
         GomokuGame | XiangqiGame | TicTacToeGame | TurtleSoupGame | PigDiceGame | None
@@ -233,11 +262,21 @@ class GameRoom:
         now = time.time()
         incoming_requests: list[dict[str, object]] = []
         outgoing_request: dict[str, object] | None = None
-        visitor_seat = (
-            multiplayer.seat_for_token(visitor.token)
-            if multiplayer.enabled and visitor
-            else None
-        )
+        player_names = [
+            self.visitors[token].display_name
+            for token in player_tokens
+            if token in self.visitors and self.visitors[token].display_name
+        ]
+        player_labels = [
+            (
+                f"{self.visitors[token].display_name}（{self.visitors[token].number}号）"
+                if token in self.visitors and self.visitors[token].display_name
+                else f"{self.visitors[token].number}号"
+            )
+            for token in player_tokens
+            if token in self.visitors
+        ]
+        current_player = self.visitors.get(current_token)
         if multiplayer.enabled and visitor:
             for swap in multiplayer.swap_requests.values():
                 requester = self.visitors.get(swap.requester_token)
@@ -264,6 +303,9 @@ class GameRoom:
             "status": self.status,
             "created_at": self.created_at,
             "visitor_number": visitor.number if visitor else None,
+            "visitor_display_name": (
+                visitor.display_name if visitor and visitor.identity_confirmed else ""
+            ),
             "is_player": bool(visitor and visitor.token in player_tokens),
             "is_current_player": bool(visitor and visitor.token == current_token),
             "player_number": player.number if player else None,
@@ -272,6 +314,13 @@ class GameRoom:
                 for token in player_tokens
                 if token in self.visitors
             ],
+            "player_names": player_names,
+            "player_labels": player_labels,
+            "current_player_name": (
+                current_player.display_name
+                if current_player and current_player.identity_confirmed
+                else ""
+            ),
             "player_capacity": multiplayer.capacity if multiplayer.enabled else 1,
             "multiplayer_enabled": multiplayer.enabled,
             "current_player_number": (
@@ -293,9 +342,19 @@ class GameRoom:
             ),
             "server_time": now,
             "player_confirmed": (
-                visitor_seat.identity_confirmed
-                if visitor_seat is not None
+                visitor.identity_confirmed
+                if visitor is not None
                 else self.player_identity_confirmed
+            ),
+            "identity_token": (
+                visitor.binding_token
+                if visitor and not visitor.identity_confirmed and not self.admin_room
+                else ""
+            ),
+            "identity_token_expires_at": (
+                visitor.binding_expires_at
+                if visitor and not visitor.identity_confirmed and not self.admin_room
+                else 0
             ),
             "turtle_soup_mode": self.turtle_soup_mode,
             "difficulty": self.difficulty,
@@ -367,6 +426,20 @@ class GameRoom:
                 for token in player_tokens
                 if token in self.visitors
             ],
+            "player_names": [
+                self.visitors[token].display_name
+                for token in player_tokens
+                if token in self.visitors and self.visitors[token].display_name
+            ],
+            "player_labels": [
+                (
+                    f"{self.visitors[token].display_name}（{self.visitors[token].number}号）"
+                    if token in self.visitors and self.visitors[token].display_name
+                    else f"{self.visitors[token].number}号"
+                )
+                for token in player_tokens
+                if token in self.visitors
+            ],
             "player_capacity": multiplayer.capacity if multiplayer.enabled else 1,
             "current_player_number": (
                 self.visitors[current_token].number
@@ -388,6 +461,14 @@ class GameRoom:
                         else self.player_qq
                         if item.token == self.player_token
                         else ""
+                    ),
+                    "display_name": (
+                        multiplayer.seat_for_token(item.token).display_name
+                        if multiplayer.enabled
+                        and multiplayer.seat_for_token(item.token) is not None
+                        else self.player.display_name
+                        if item.token == self.player_token and self.player
+                        else item.display_name
                     ),
                 }
                 for item in sorted(
