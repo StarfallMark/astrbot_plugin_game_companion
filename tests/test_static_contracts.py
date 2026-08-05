@@ -29,6 +29,11 @@ def test_config_defaults_match_product_contract() -> None:
     assert (
         schema["multiplayer"]["items"]["swap_request_expiry_seconds"]["default"] == 20
     )
+    integration = schema["companion_integration"]["items"]
+    assert integration["enable_emotional_afterglow"]["default"] is False
+    assert integration["enable_proactive_invites"]["default"] is False
+    assert integration["proactive_invite_probability_percent"]["default"] == 18
+    assert integration["proactive_invite_cooldown_hours"]["default"] == 24
 
 
 def test_metadata_registers_default_management_page() -> None:
@@ -39,7 +44,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.1.7"
+    assert metadata["version"] == "0.1.8"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:

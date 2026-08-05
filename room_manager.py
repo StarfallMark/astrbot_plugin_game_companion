@@ -695,7 +695,12 @@ class RoomManager:
             await self._bot_turn(room)
 
     async def request_rematch(
-        self, room: GameRoom, visitor_token: str, *, record_message: bool = True
+        self,
+        room: GameRoom,
+        visitor_token: str,
+        *,
+        record_message: bool = True,
+        request_text: str = "",
     ) -> None:
         """Put a finished room into a Bot-decided rematch request state."""
         async with room.lock:
@@ -716,7 +721,12 @@ class RoomManager:
                     "user", "想再来一局。", visitor=visitor, message_type="control"
                 )
         await self._emit(
-            "rematch_requested", room, {"visitor_token": visitor_token}
+            "rematch_requested",
+            room,
+            {
+                "visitor_token": visitor_token,
+                "request_text": str(request_text or "想再来一局。").strip()[:240],
+            },
         )
 
     async def resolve_rematch(

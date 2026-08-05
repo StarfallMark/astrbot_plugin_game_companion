@@ -171,6 +171,7 @@ class GameRoom:
     player_seat_locked: bool = False
     confirmed_participant_qqs: set[str] = field(default_factory=set)
     participant_names: dict[str, str] = field(default_factory=dict)
+    round_participant_qqs: set[str] = field(default_factory=set)
     multiplayer: MultiplayerState = field(default_factory=MultiplayerState)
     game: (
         GomokuGame | XiangqiGame | TicTacToeGame | TurtleSoupGame | PigDiceGame | None

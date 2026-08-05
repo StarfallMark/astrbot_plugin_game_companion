@@ -191,5 +191,36 @@
         "hint": "只在房间销毁时写一条摘要；不会保存逐步棋谱。"
       }
     }
+  },
+  "companion_integration": {
+    "description": "我会永远陪着你联动",
+    "type": "object",
+    "hint": "需要安装支持游戏事件扩展 API 的 astrbot_plugin_private_companion；未安装或版本较旧时自动降级，不影响游戏本身。",
+    "items": {
+      "enable_emotional_afterglow": {
+        "description": "启用游戏情绪余韵",
+        "type": "bool",
+        "default": false,
+        "hint": "每局结束后按已绑定玩家分别上报结构化结果，由陪伴人格决定胜负在意程度、叠加上限、持续时间和后续语气。"
+      },
+      "enable_proactive_invites": {
+        "description": "允许陪伴主动邀请游戏",
+        "type": "bool",
+        "default": false,
+        "hint": "向陪伴插件注册可选主动能力；是否真正邀请仍由陪伴人格、日程、关系、免打扰和主动消息额度共同决定。"
+      },
+      "proactive_invite_probability_percent": {
+        "description": "主动邀请候选权重百分比",
+        "type": "int",
+        "default": 18,
+        "hint": "范围 0-100，仅影响该能力进入主动动作选择时的相对权重，不代表固定发送概率。"
+      },
+      "proactive_invite_cooldown_hours": {
+        "description": "主动邀请冷却小时",
+        "type": "int",
+        "default": 24,
+        "hint": "由陪伴插件统一执行冷却；0 表示不增加该能力自己的额外冷却。"
+      }
+    }
   }
 }

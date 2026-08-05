@@ -53,7 +53,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.1.7"
+PLUGIN_VERSION = "0.1.8"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
@@ -92,6 +92,24 @@ class GameCompanionPlugin(Star):
         )
         self.record_shared_experience = self._cfg_bool(
             "memory.record_shared_experience", True
+        )
+        self.companion_afterglow_enabled = self._cfg_bool(
+            "companion_integration.enable_emotional_afterglow", False
+        )
+        self.companion_invites_enabled = self._cfg_bool(
+            "companion_integration.enable_proactive_invites", False
+        )
+        self.companion_invite_probability = self._cfg_int(
+            "companion_integration.proactive_invite_probability_percent",
+            18,
+            minimum=0,
+            maximum=100,
+        ) / 100.0
+        self.companion_invite_cooldown_hours = self._cfg_int(
+            "companion_integration.proactive_invite_cooldown_hours",
+            24,
+            minimum=0,
+            maximum=24 * 30,
         )
         self.commentary_cooldown = self._cfg_int(
             "game.commentary_cooldown_seconds", 45, minimum=10, maximum=600
@@ -157,17 +175,22 @@ class GameCompanionPlugin(Star):
         self._tunnel_recovery_task: asyncio.Task | None = None
         self._next_tunnel_retry_at = 0.0
         self._background_tasks: set[asyncio.Task] = set()
+        self._companion_round_event_tasks: dict[str, asyncio.Task] = {}
+        self._companion_invite_api: Any | None = None
+        self._next_companion_registration_at = 0.0
         self._register_page_api()
 
     async def initialize(self) -> None:
         """Start only the in-memory watchdog; the port opens lazily on demand."""
         self._watchdog_task = asyncio.create_task(self._watchdog())
+        self._register_companion_invite_ability()
         logger.info(
             "[GameCompanion] 游戏伴侣已加载；房间服务将在首次创建房间时按需启动"
         )
 
     async def terminate(self) -> None:
         """Invalidate every room and stop only plugin-owned resources."""
+        self._unregister_companion_invite_ability()
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             await asyncio.gather(self._watchdog_task, return_exceptions=True)
@@ -631,6 +654,7 @@ class GameCompanionPlugin(Star):
                 self._spawn(self._prepare_turtle_soup(room, room.game))
             return
         if event_name == "game_started":
+            self._capture_round_participants(room, reset=True)
             if room.player_identity_confirmed:
                 self._notify_companion_activity(room, "updated")
             opening = (
@@ -650,7 +674,11 @@ class GameCompanionPlugin(Star):
             )
             return
         if event_name == "player_confirmed":
+            self._capture_round_participants(room)
             self._notify_companion_activity(room, "started")
+            return
+        if event_name == "seats_changed":
+            self._capture_round_participants(room)
             return
         if event_name == "board_changed" and room.game is not None:
             if room.game_type == "gomoku":
@@ -737,6 +765,7 @@ class GameCompanionPlugin(Star):
                 )
             return
         if event_name == "game_finished":
+            self._queue_companion_round_event(room, payload)
             if room.game_type == "turtle_soup" and isinstance(
                 room.game, TurtleSoupGame
             ):
@@ -764,6 +793,18 @@ class GameCompanionPlugin(Star):
             return
         if event_name == "rematch_requested":
             visitor = room.visitors.get(str(payload.get("visitor_token") or ""))
+            pending = self._companion_round_event_tasks.get(room.room_id)
+            if pending is not None and not pending.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(pending), timeout=8)
+                except TimeoutError:
+                    pass
+            await self._report_companion_game_event(
+                room,
+                "rematch_requested",
+                payload,
+                visitors=[visitor] if visitor is not None else [],
+            )
             self._spawn(self._decide_rematch(room, visitor=visitor))
             return
         if event_name == "game_switched":
@@ -823,7 +864,10 @@ class GameCompanionPlugin(Star):
                     reply = f"海龟汤已切换为{label}。" if switched else f"现在已经是{label}。"
                 elif action == "rematch":
                     await self.manager.request_rematch(
-                        room, visitor.token, record_message=False
+                        room,
+                        visitor.token,
+                        record_message=False,
+                        request_text=cleaned,
                     )
                     return {"action": action, "reply": ""}
                 elif action == "undo":
@@ -1741,6 +1785,258 @@ class GameCompanionPlugin(Star):
         except Exception as exc:
             logger.debug("[GameCompanion] 同步陪伴活动状态失败: %s", exc)
 
+    @staticmethod
+    def _current_player_visitors(room: GameRoom) -> list[Visitor]:
+        if room.multiplayer.enabled:
+            return [
+                visitor
+                for seat in room.multiplayer.seats
+                if (visitor := room.visitors.get(seat.visitor_token)) is not None
+                and visitor.identity_confirmed
+                and visitor.qq
+            ]
+        player = room.player
+        return (
+            [player]
+            if player is not None and player.identity_confirmed and player.qq
+            else []
+        )
+
+    def _capture_round_participants(self, room: GameRoom, *, reset: bool = False) -> None:
+        if reset:
+            room.round_participant_qqs.clear()
+        for visitor in self._current_player_visitors(room):
+            room.round_participant_qqs.add(visitor.qq)
+            room.participant_names[visitor.qq] = visitor.display_name
+
+    def _queue_companion_round_event(
+        self, room: GameRoom, payload: dict[str, Any]
+    ) -> None:
+        if not self.companion_afterglow_enabled:
+            return
+        task = self._spawn(
+            self._report_companion_game_event(room, "round_finished", payload)
+        )
+        self._companion_round_event_tasks[room.room_id] = task
+
+        def clear(finished: asyncio.Task) -> None:
+            if self._companion_round_event_tasks.get(room.room_id) is finished:
+                self._companion_round_event_tasks.pop(room.room_id, None)
+
+        task.add_done_callback(clear)
+
+    async def _report_companion_game_event(
+        self,
+        room: GameRoom,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        visitors: list[Visitor] | None = None,
+    ) -> None:
+        if not self.companion_afterglow_enabled:
+            return
+        api = self._private_companion_api()
+        recorder = getattr(api, "record_game_event", None) if api else None
+        if not callable(recorder):
+            logger.debug(
+                "[GameCompanion] 陪伴插件未提供游戏余韵 API，已跳过联动"
+            )
+            return
+        if visitors is None:
+            by_qq = {visitor.qq: visitor for visitor in self._current_player_visitors(room)}
+            for qq in room.round_participant_qqs:
+                if qq not in by_qq:
+                    by_qq[qq] = Visitor(
+                        token="",
+                        number=0,
+                        qq=qq,
+                        display_name=room.participant_names.get(qq, ""),
+                        identity_confirmed=True,
+                    )
+            participants = list(by_qq.values())
+        else:
+            participants = [
+                visitor
+                for visitor in visitors
+                if visitor.identity_confirmed and visitor.qq
+            ]
+        if not participants:
+            return
+        raw_result = str(payload.get("result") or "")
+        bot_result = {
+            "human_win": "bot_loss",
+            "bot_win": "bot_win",
+            "draw": "draw",
+        }.get(raw_result, "completed")
+        score = room.current_score
+        round_number = score.completed
+
+        async def submit(visitor: Visitor) -> None:
+            event_id = (
+                f"{room.room_id}:{room.game_type}:{round_number}:"
+                f"{event_type}:{visitor.qq}"
+            )
+            event_payload = {
+                "event_id": event_id,
+                "event_type": event_type,
+                "user_id": visitor.qq,
+                "user_name": visitor.display_name,
+                "game": room.game_type,
+                "game_label": self._game_label(room.game_type),
+                "bot_result": bot_result,
+                "request_text": str(payload.get("request_text") or "")[:240],
+                "recent_context": self._companion_game_recent_context(
+                    room, visitor.qq
+                ),
+                "room_id": room.room_id,
+                "session_id": room.session_id,
+                "scope": room.source,
+                "difficulty": room.difficulty,
+                "round_number": round_number,
+                "score": {
+                    "completed": score.completed,
+                    "human_wins": score.human_wins,
+                    "bot_wins": score.bot_wins,
+                    "draws": score.draws,
+                },
+                "occurred_at": time.time(),
+                "source_plugin": PLUGIN_NAME,
+            }
+            try:
+                result = recorder(event_payload)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:
+                logger.debug(
+                    "[GameCompanion] 为玩家 %s 上报游戏余韵失败: %s",
+                    visitor.qq,
+                    exc,
+                )
+
+        await asyncio.gather(*(submit(visitor) for visitor in participants))
+
+    @staticmethod
+    def _companion_game_recent_context(room: GameRoom, qq: str) -> str:
+        transcript = room.chat_transcripts.get(str(qq or ""), [])
+        lines: list[str] = []
+        for entry in transcript[-6:]:
+            content = " ".join(str(entry.get("content") or "").split())[:180]
+            if not content:
+                continue
+            role = "用户" if entry.get("role") == "user" else "Bot"
+            lines.append(f"{role}：{content}")
+        return "\n".join(lines)[:900]
+
+    def _register_companion_invite_ability(self) -> bool:
+        if not self.companion_invites_enabled:
+            return False
+        now = time.monotonic()
+        if now < self._next_companion_registration_at:
+            return bool(self._companion_invite_api)
+        self._next_companion_registration_at = now + 15
+        api = self._private_companion_api()
+        if api is None:
+            return False
+        if api is self._companion_invite_api:
+            return True
+        if self._companion_invite_api is not None:
+            self._unregister_companion_invite_ability()
+        registrar = getattr(api, "register_proactive_ability", None)
+        if not callable(registrar):
+            return False
+        try:
+            registered = bool(
+                registrar(
+                    {
+                        "name": "game_companion_invite",
+                        "module": "游戏伴侣",
+                        "label": "邀请一起玩游戏",
+                        "description": "结合近期共同游戏、当前人格和生活状态，自然邀请用户玩一局游戏。",
+                        "when": "有闲暇、想陪用户玩，或对最近胜负仍有余味时",
+                        "use_for": "提出低压力的游戏邀请，或自然约一次再战",
+                        "avoid": "用户正在游戏、房间已满、关系或免打扰不适合时不要邀请；不要提前创建房间",
+                        "share_probability": self.companion_invite_probability,
+                        "min_interval_hours": self.companion_invite_cooldown_hours,
+                        "default_enabled": True,
+                        "availability": self._companion_invite_available,
+                        "executor": self._execute_companion_invite,
+                    }
+                )
+            )
+        except Exception as exc:
+            logger.debug("[GameCompanion] 注册陪伴主动邀请失败: %s", exc)
+            return False
+        if registered:
+            self._companion_invite_api = api
+            logger.info("[GameCompanion] 已向陪伴插件注册主动游戏邀请能力")
+        return registered
+
+    def _unregister_companion_invite_ability(self) -> None:
+        api = self._companion_invite_api
+        self._companion_invite_api = None
+        if api is None:
+            return
+        unregister = getattr(api, "unregister_proactive_ability", None)
+        if callable(unregister):
+            try:
+                unregister("game_companion_invite")
+            except Exception as exc:
+                logger.debug("[GameCompanion] 注销陪伴主动邀请失败: %s", exc)
+
+    def _companion_invite_available(self, context: dict[str, Any]) -> bool:
+        if not (
+            self.companion_invites_enabled
+            and self.server_enabled
+            and self.private_rooms_enabled
+        ):
+            return False
+        user = context.get("user") if isinstance(context, dict) else {}
+        user = user if isinstance(user, dict) else {}
+        user_id = str(user.get("user_id") or "").strip()
+        if not user_id:
+            return False
+        for room in self.manager.rooms.values():
+            if user_id in {room.creator_qq, room.player_qq}:
+                return False
+            if any(visitor.qq == user_id for visitor in self._current_player_visitors(room)):
+                return False
+        active_private = sum(
+            room.source == "private" for room in self.manager.rooms.values()
+        )
+        if self.manager.max_private_rooms and active_private >= self.manager.max_private_rooms:
+            return False
+        afterglow = user.get("game_afterglow")
+        if isinstance(afterglow, dict):
+            expires_at = self._safe_float(afterglow.get("expires_at"))
+            invite_interest = self._safe_int(afterglow.get("invite_interest"))
+            if expires_at > time.time() and invite_interest < 20:
+                return False
+        return True
+
+    def _execute_companion_invite(self, context: dict[str, Any]) -> dict[str, Any]:
+        user = context.get("user") if isinstance(context, dict) else {}
+        user = user if isinstance(user, dict) else {}
+        afterglow = user.get("game_afterglow")
+        afterglow = afterglow if isinstance(afterglow, dict) else {}
+        active_afterglow = self._safe_float(afterglow.get("expires_at")) > time.time()
+        last_game = str(afterglow.get("game_label") or "").strip()
+        tone = str(afterglow.get("tone") or "").strip()[:160]
+        games = "五子棋、中国象棋、井字棋、海龟汤或贪心骰子"
+        details = (
+            f"最近和该用户玩的游戏是{last_game}，当前余味是：{tone}。"
+            if active_afterglow and last_game and tone
+            else f"可以从{games}中按人格和用户偏好自然挑一种。"
+        )
+        return {
+            "ok": True,
+            "context": (
+                "请按当前人格向该用户发出一次轻松、可拒绝的游戏邀请。"
+                f"{details}只表达邀请，不创建房间、不生成链接；等用户明确接受后再由正常对话工具创建。"
+            ),
+            "summary": "想邀请用户一起玩游戏",
+            "status": "已形成游戏邀请动机",
+        }
+
     async def _send_to_origin(self, room: GameRoom, text: str) -> None:
         if not text:
             return
@@ -1801,6 +2097,7 @@ class GameCompanionPlugin(Star):
                 await asyncio.sleep(2)
                 await self.manager.sweep_expired()
                 self._schedule_tunnel_recovery()
+                self._register_companion_invite_ability()
         except asyncio.CancelledError:
             raise
 
@@ -2021,6 +2318,20 @@ class GameCompanionPlugin(Star):
     def _cfg_non_negative(self, dotted_key: str, default: int) -> int:
         try:
             return max(0, int(self._cfg(dotted_key, default)))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value or 0)
         except (TypeError, ValueError):
             return default
 
