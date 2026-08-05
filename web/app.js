@@ -8,7 +8,7 @@
   const boardStage = document.querySelector(".board-stage");
   const soupStage = document.getElementById("soupStage");
   const diceStage = document.getElementById("diceStage");
-  const soupInput = document.getElementById("soupInput");
+  const chatInput = document.getElementById("chatInput");
   const context = board.getContext("2d");
   const toast = document.getElementById("toast");
   let visitorToken = accessToken ? window.localStorage.getItem(storageKey) || "" : "";
@@ -18,9 +18,10 @@
   let pollTimer = 0;
   let toastTimer = 0;
   let busy = false;
+  let chatBusy = false;
   let pendingMove = null;
-  let pendingSoup = null;
-  let soupMode = "ask";
+  let activeRoomView = "game";
+  let lastSeenMessageId = 0;
   let renderedDiceSequence = 0;
 
   function icons() {
@@ -59,6 +60,7 @@
     visitorToken = String(data.visitor_token || "");
     window.localStorage.setItem(storageKey, visitorToken);
     room = data.room;
+    lastSeenMessageId = latestMessageId(room);
     syncGameUi();
     render();
   }
@@ -88,12 +90,18 @@
     const data = await response.json();
     if (!response.ok) throw new Error(data?.message || "房间状态不可用");
     const previousType = room?.game_type;
+    const previousMessageId = latestMessageId(room);
     room = data?.data?.room;
     if (previousType !== room?.game_type) {
       selectedPiece = null;
       pendingMove = null;
-      pendingSoup = null;
       syncGameUi();
+    }
+    if (
+      activeRoomView !== "chat"
+      && latestMessageId(room) > Math.max(previousMessageId, lastSeenMessageId)
+    ) {
+      document.getElementById("chatUnread").hidden = false;
     }
     render();
   }
@@ -120,6 +128,28 @@
       waiting: "等待玩家", setup: "等待开局", active: "对局中", paused: "已暂停",
       finished: "本局结束", rematch_pending: "等待 Bot 回应", closed: "房间已结束",
     }[status] || "等待中";
+  }
+
+  function latestMessageId(currentRoom) {
+    const messages = Array.isArray(currentRoom?.messages) ? currentRoom.messages : [];
+    return messages.reduce((latest, message) => {
+      const value = Number(message.id || 0);
+      return Number.isFinite(value) ? Math.max(latest, value) : latest;
+    }, 0);
+  }
+
+  function setRoomView(view) {
+    activeRoomView = view === "chat" ? "chat" : "game";
+    document.getElementById("gameWorkspace").classList.toggle("room-view-hidden", activeRoomView !== "game");
+    document.getElementById("chatPanel").classList.toggle("room-view-hidden", activeRoomView !== "chat");
+    document.querySelectorAll("[data-room-view]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.roomView === activeRoomView);
+    });
+    if (activeRoomView === "chat") {
+      lastSeenMessageId = latestMessageId(room);
+      document.getElementById("chatUnread").hidden = true;
+      window.setTimeout(() => chatInput.focus(), 0);
+    }
   }
 
   function difficultyLabel(value) {
@@ -190,6 +220,19 @@
         ? `${room.visitor_display_name}（${room.visitor_number}号）`
         : `${room.visitor_number} 号`)
       : "访客";
+    document.getElementById("chatIdentity").textContent = room.is_player
+      ? (room.visitor_display_name
+        ? `${room.visitor_display_name}（玩家）`
+        : `${room.visitor_number || "?"}号玩家`)
+      : room.player_confirmed
+      ? (room.visitor_display_name
+        ? `${room.visitor_display_name}（观众）`
+        : `${room.visitor_number || "?"}号观众`)
+      : `匿名观众（${room.visitor_number || "?"}号）`;
+    chatInput.placeholder = room.game_type === "turtle_soup"
+      ? "提问、给线索，或和 Bot 聊天"
+      : "和 Bot 说点什么";
+    document.getElementById("chatSend").disabled = chatBusy;
     const pigDice = room.game_type === "pig_dice";
     document.getElementById("difficulty").textContent = pigDice
       ? ({ easy: "稳健", normal: "均衡", hard: "大胆" }[room.difficulty] || "均衡")
@@ -350,24 +393,41 @@
 
   function renderMessages() {
     const list = document.getElementById("messages");
+    const wasNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
     list.replaceChildren();
     const messages = Array.isArray(room.messages) ? room.messages : [];
     if (!messages.length) {
       const empty = document.createElement("span");
       empty.className = "empty-message";
-      empty.textContent = room.game_type === "turtle_soup"
-        ? "关键线索和人格回应会显示在这里。"
-        : "对局开始后，这里会显示关键回应。";
+      empty.textContent = "房间对话会显示在这里";
       list.appendChild(empty);
       return;
     }
-    messages.slice(-12).forEach((message) => {
-      const item = document.createElement("p");
-      item.className = `message ${message.role || "system"}`;
-      item.textContent = String(message.content || "");
+    messages.slice(-60).forEach((message) => {
+      const role = message.role || "system";
+      const item = document.createElement("article");
+      item.className = `message ${role} ${message.message_type || "chat"}`;
+      if (role !== "system") {
+        const meta = document.createElement("span");
+        meta.className = "message-meta";
+        if (role === "bot") {
+          meta.textContent = "Bot";
+        } else {
+          const sender = String(message.sender_name || "匿名观众");
+          meta.textContent = message.sender_number
+            ? `${sender}（${message.sender_number}号）`
+            : sender;
+        }
+        item.appendChild(meta);
+      }
+      const content = document.createElement("p");
+      content.className = "message-content";
+      content.textContent = String(message.content || "");
+      item.appendChild(content);
       list.appendChild(item);
     });
-    list.scrollTop = list.scrollHeight;
+    if (wasNearBottom || activeRoomView === "chat") list.scrollTop = list.scrollHeight;
+    if (activeRoomView === "chat") lastSeenMessageId = latestMessageId(room);
   }
 
   function renderTurtleSoup() {
@@ -414,7 +474,6 @@
     const history = document.getElementById("soupHistory");
     history.replaceChildren();
     const entries = Array.isArray(game?.entries) ? game.entries.slice() : [];
-    if (pendingSoup) entries.push(pendingSoup);
     if (!entries.length) {
       const empty = document.createElement("span");
       empty.className = "soup-empty";
@@ -448,37 +507,6 @@
     solution.hidden = playerHosted || !puzzle?.solution;
     document.getElementById("soupSolutionText").textContent = puzzle?.solution || "";
 
-    const canInteract = Boolean(
-      room.is_current_player && room.status === "active" && game?.phase === "ready"
-      && !game?.processing && !busy,
-    );
-    document.querySelector(".soup-mode").hidden = playerHosted;
-    soupInput.disabled = !canInteract;
-    document.getElementById("soupSubmitAction").disabled = !canInteract;
-    if (playerHosted) {
-      soupInput.maxLength = 800;
-      soupInput.placeholder = game?.turn_count
-        ? "回答 Bot 的问题，或补充一条新的公开线索"
-        : "提供第一条公开线索，不要输入隐藏汤底";
-    }
-    const hintsExhausted = (game?.hint_limit ?? 0) <= (game?.hints_used ?? 0);
-    const hintAction = document.getElementById("soupHintAction");
-    hintAction.hidden = playerHosted;
-    hintAction.disabled = playerHosted || !canInteract || hintsExhausted;
-    const correctAction = document.getElementById("soupCorrectAction");
-    correctAction.hidden = !playerHosted || game?.last_bot_action !== "guess" || room.status !== "active";
-    correctAction.disabled = !canInteract;
-  }
-
-  function setSoupMode(mode) {
-    soupMode = mode === "answer" ? "answer" : "ask";
-    document.querySelectorAll("[data-soup-mode]").forEach((button) => {
-      button.classList.toggle("is-active", button.dataset.soupMode === soupMode);
-    });
-    soupInput.maxLength = soupMode === "answer" ? 800 : 200;
-    soupInput.placeholder = soupMode === "answer"
-      ? "写下你认为完整的事件经过"
-      : "输入一个可以用是或否回答的问题";
   }
 
   function renderPigDice() {
@@ -557,66 +585,34 @@
     }
   }
 
-  async function submitSoup(event) {
+  async function submitChat(event) {
     event.preventDefault();
-    if (busy || room?.game_type !== "turtle_soup") return;
-    const text = soupInput.value.trim();
-    const playerHosted = room.game?.mode === "player_host" || room.turtle_soup_mode === "player_host";
-    if (!text) {
-      showToast(soupMode === "answer" ? "请先写下完整推理" : "请先输入一个问题");
-      return;
-    }
-    busy = true;
-    pendingSoup = {
-      kind: playerHosted ? "reverse" : (soupMode === "answer" ? "answer" : "question"),
-      prompt: text,
-      response: playerHosted ? "Bot 推理中" : "Bot 判断中",
-      player_number: room.visitor_number,
-      pending: true,
-    };
+    if (chatBusy || !room) return;
+    const text = chatInput.value.trim();
+    if (!text) return;
+    chatBusy = true;
+    const optimisticId = `pending-${Date.now()}`;
+    if (!Array.isArray(room.messages)) room.messages = [];
+    room.messages.push({
+      id: optimisticId,
+      role: "user",
+      message_type: "chat",
+      content: text,
+      sender_name: room.player_confirmed ? (room.visitor_display_name || "已绑定观众") : "匿名观众",
+      sender_number: room.visitor_number,
+    });
     render();
     try {
-      const action = playerHosted ? "soup/reverse" : (soupMode === "answer" ? "soup/answer" : "soup/question");
-      const data = await request("POST", action, { visitor_token: visitorToken, text });
+      const data = await request("POST", "chat", { visitor_token: visitorToken, text });
       room = data.room;
-      soupInput.value = "";
+      chatInput.value = "";
+      chatInput.style.height = "";
     } catch (error) {
+      room.messages = room.messages.filter((message) => message.id !== optimisticId);
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
-      showToast(error?.message || "Bot 暂时无法判断");
+      showToast(error?.message || "消息发送失败");
     } finally {
-      pendingSoup = null;
-      busy = false;
-      render();
-    }
-  }
-
-  async function confirmSoupGuess() {
-    if (busy || room?.game_type !== "turtle_soup" || !room.is_current_player) return;
-    busy = true;
-    renderTurtleSoup();
-    try {
-      const data = await request("POST", "soup/correct", { visitor_token: visitorToken });
-      room = data.room;
-      showToast("已确认 Bot 猜中");
-    } catch (error) {
-      showToast(error?.message || "无法确认 Bot 的猜测");
-    } finally {
-      busy = false;
-      render();
-    }
-  }
-
-  async function requestSoupHint() {
-    if (busy || room?.game_type !== "turtle_soup") return;
-    busy = true;
-    render();
-    try {
-      const data = await request("POST", "soup/hint", { visitor_token: visitorToken });
-      room = data.room;
-    } catch (error) {
-      showToast(error?.message || "暂时无法取得提示");
-    } finally {
-      busy = false;
+      chatBusy = false;
       render();
     }
   }
@@ -1080,20 +1076,28 @@
       });
     });
   });
-  document.querySelectorAll("[data-soup-mode]").forEach((button) => {
-    button.addEventListener("click", () => setSoupMode(button.dataset.soupMode));
+  document.querySelectorAll("[data-room-view]").forEach((button) => {
+    button.addEventListener("click", () => setRoomView(button.dataset.roomView));
   });
   document.getElementById("seatAction").addEventListener("click", seatAction);
-  document.getElementById("soupComposer").addEventListener("submit", submitSoup);
-  document.getElementById("soupHintAction").addEventListener("click", requestSoupHint);
-  document.getElementById("soupCorrectAction").addEventListener("click", confirmSoupGuess);
+  document.getElementById("chatComposer").addEventListener("submit", submitChat);
+  chatInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      document.getElementById("chatComposer").requestSubmit();
+    }
+  });
+  chatInput.addEventListener("input", () => {
+    chatInput.style.height = "auto";
+    chatInput.style.height = `${Math.min(chatInput.scrollHeight, 126)}px`;
+  });
   document.getElementById("diceRollAction").addEventListener("click", () => diceAction("roll"));
   document.getElementById("diceHoldAction").addEventListener("click", () => diceAction("hold"));
   board.addEventListener("click", moveAt);
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) notifyLeave();
   });
-  setSoupMode("ask");
+  setRoomView("game");
   icons();
   join()
     .then(() => { setConnection("online", "已连接"); pollTimer = window.setTimeout(poll, 1000); })

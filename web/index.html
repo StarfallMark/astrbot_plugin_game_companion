@@ -24,7 +24,19 @@
       </div>
     </header>
 
-    <section class="game-layout">
+    <nav class="mobile-tabs" aria-label="房间视图">
+      <button type="button" class="is-active" data-room-view="game">
+        <i data-lucide="gamepad-2"></i><span>游戏</span>
+      </button>
+      <button type="button" data-room-view="chat">
+        <i data-lucide="message-circle"></i><span>对话</span>
+        <span id="chatUnread" class="unread-dot" hidden></span>
+      </button>
+    </nav>
+
+    <section class="room-layout">
+      <section id="gameWorkspace" class="game-workspace">
+        <section class="game-layout">
       <div class="board-stage">
         <canvas id="board" width="760" height="760" aria-label="棋盘"></canvas>
         <div id="boardOverlay" class="board-overlay" hidden>
@@ -54,24 +66,6 @@
           <span class="label">完整汤底</span>
           <p id="soupSolutionText"></p>
         </section>
-        <form id="soupComposer" class="soup-composer">
-          <div class="soup-mode" role="group" aria-label="输入类型">
-            <button type="button" data-soup-mode="ask" class="is-active">提问</button>
-            <button type="button" data-soup-mode="answer">猜答案</button>
-          </div>
-          <textarea id="soupInput" rows="3" maxlength="200" placeholder="输入一个可以用是或否回答的问题"></textarea>
-          <footer>
-            <button id="soupHintAction" class="secondary-action" type="button" title="申请提示">
-              <i data-lucide="lightbulb"></i><span>提示</span>
-            </button>
-            <button id="soupSubmitAction" class="primary-action compact" type="submit">
-              <i data-lucide="send"></i><span>发送</span>
-            </button>
-            <button id="soupCorrectAction" class="secondary-action" type="button" hidden>
-              <i data-lucide="badge-check"></i><span>Bot 猜中了</span>
-            </button>
-          </footer>
-        </form>
       </section>
 
       <section id="diceStage" class="dice-stage" hidden aria-label="贪心骰子">
@@ -159,13 +153,25 @@
           <div id="peopleList" class="people-list"></div>
         </section>
 
-        <section class="messages-panel">
-          <div class="section-head">
-            <span class="label">局内回应</span>
-            <i data-lucide="message-circle"></i>
-          </div>
-          <div id="messages" class="messages" aria-live="polite"></div>
+      </aside>
         </section>
+      </section>
+
+      <aside id="chatPanel" class="chat-panel" aria-label="Bot 对话">
+        <header class="chat-header">
+          <div>
+            <span class="label">房间对话</span>
+            <h2>Bot 对话</h2>
+          </div>
+          <span id="chatIdentity" class="chat-identity">匿名观众</span>
+        </header>
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <form id="chatComposer" class="chat-composer">
+          <textarea id="chatInput" rows="2" maxlength="500" placeholder="和 Bot 说点什么"></textarea>
+          <button id="chatSend" class="chat-send" type="submit" title="发送消息">
+            <i data-lucide="send"></i><span class="sr-only">发送消息</span>
+          </button>
+        </form>
       </aside>
     </section>
   </main>

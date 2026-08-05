@@ -111,6 +111,7 @@ class Visitor:
     identity_confirmed: bool = False
     binding_token: str = ""
     binding_expires_at: float = 0.0
+    last_chat_at: float = 0.0
 
     BINDING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -186,9 +187,12 @@ class GameRoom:
     turtle_soup_stats: TurtleSoupStats = field(default_factory=TurtleSoupStats)
     turtle_soup_recent_signatures: list[str] = field(default_factory=list)
     messages: list[dict[str, object]] = field(default_factory=list)
+    next_message_id: int = 1
+    chat_transcripts: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     close_reason: str = ""
     last_commentary_at: float = 0.0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    chat_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @property
     def player(self) -> Visitor | None:
@@ -230,17 +234,64 @@ class GameRoom:
     def draws(self, value: int) -> None:
         self.current_score.draws = int(value)
 
-    def add_message(self, role: str, content: str) -> None:
-        """Append a bounded game-related message for the WebUI."""
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        *,
+        visitor: Visitor | None = None,
+        message_type: str = "chat",
+    ) -> None:
+        """Append one bounded room message without exposing private identity fields."""
+        cleaned = str(content or "").strip()
+        if not cleaned:
+            return
+        sender_name = ""
+        sender_number: int | None = None
+        sender_bound = False
+        if visitor is not None:
+            sender_number = visitor.number
+            sender_bound = visitor.identity_confirmed
+            sender_name = (
+                visitor.display_name.strip()
+                if visitor.identity_confirmed and visitor.display_name.strip()
+                else "匿名观众"
+            )
         self.messages.append(
             {
+                "id": self.next_message_id,
                 "role": role,
-                "content": content[:800],
+                "content": cleaned[:800],
                 "at": time.time(),
                 "game_type": self.game_type,
+                "message_type": (
+                    "event"
+                    if role == "system" and message_type == "chat"
+                    else str(message_type or "chat")[:30]
+                ),
+                "sender_name": sender_name,
+                "sender_number": sender_number,
+                "sender_bound": sender_bound,
             }
         )
-        del self.messages[:-30]
+        self.next_message_id += 1
+        del self.messages[:-80]
+
+    def record_chat_memory(self, visitor: Visitor, role: str, content: str) -> None:
+        """Retain private per-QQ chat excerpts only for confirmed identities."""
+        if not visitor.identity_confirmed or not visitor.qq:
+            return
+        qq = visitor.qq
+        self.confirmed_participant_qqs.add(qq)
+        self.participant_names[qq] = visitor.display_name
+        transcript = self.chat_transcripts.setdefault(qq, [])
+        transcript.append(
+            {
+                "role": str(role or "user")[:12],
+                "content": str(content or "").strip()[:500],
+            }
+        )
+        del transcript[:-24]
 
     def touch(self) -> None:
         """Mark a meaningful room operation."""
@@ -379,7 +430,7 @@ class GameRoom:
                 "hints": self.turtle_soup_stats.hints,
                 "answer_attempts": self.turtle_soup_stats.answer_attempts,
             },
-            "messages": self.messages[-20:],
+            "messages": self.messages[-60:],
             "close_reason": self.close_reason,
         }
 

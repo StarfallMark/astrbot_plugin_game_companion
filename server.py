@@ -107,6 +107,7 @@ class GameRoomServer:
             "/api/room/{access_token}/seat/swap/respond", self._seat_swap_respond
         )
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
+        app.router.add_post("/api/room/{access_token}/chat", self._chat)
         app.router.add_post("/api/room/{access_token}/leave", self._leave)
         return app
 
@@ -216,6 +217,18 @@ class GameRoomServer:
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.request_rematch(room, visitor_token)
         return self._response({"room": room.public_snapshot(visitor_token)})
+
+    async def _chat(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        result = await self.plugin.submit_room_chat(
+            room,
+            str(payload.get("text") or ""),
+            visitor_token=visitor_token,
+        )
+        return self._response({**result, "room": room.public_snapshot(visitor_token)})
 
     async def _dice_action(self, request: web.Request) -> web.Response:
         self._require_origin(request)

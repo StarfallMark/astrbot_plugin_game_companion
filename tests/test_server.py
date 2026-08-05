@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -20,10 +21,9 @@ class EndingXiangqiEngine:
         return ["a3a4"] if not moves else []
 
 
-def make_server(port: int = 6331) -> GameRoomServer:
-    plugin = SimpleNamespace(
-        public_base_url="",
-        quick_tunnel=SimpleNamespace(url="", running=False),
+def make_server(port: int = 6331, plugin=None) -> GameRoomServer:
+    plugin = plugin or SimpleNamespace(
+        public_base_url="", quick_tunnel=SimpleNamespace(url="", running=False)
     )
     return GameRoomServer(
         plugin,
@@ -31,6 +31,43 @@ def make_server(port: int = 6331) -> GameRoomServer:
         host="127.0.0.1",
         port=port,
         web_root=Path(__file__).resolve().parents[1] / "web",
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_endpoint_routes_message_to_plugin_without_qq_transport() -> None:
+    plugin = SimpleNamespace(
+        public_base_url="",
+        quick_tunnel=SimpleNamespace(url="", running=False),
+        submit_room_chat=AsyncMock(
+            return_value={"action": "chat", "reply": "房间内回复"}
+        ),
+    )
+    server = make_server(0, plugin)
+    room = await server.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        difficulty="normal",
+    )
+    visitor = await server.manager.join(room)
+
+    async with TestClient(TestServer(server._build_app())) as client:
+        response = await client.post(
+            f"/api/room/{room.access_token}/chat",
+            json={"visitor_token": visitor.token, "text": "你好"},
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["data"]["reply"] == "房间内回复"
+    plugin.submit_room_chat.assert_awaited_once_with(
+        room, "你好", visitor_token=visitor.token
     )
 
 

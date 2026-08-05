@@ -44,6 +44,7 @@ class RoomManager:
     FINISHED_PLAYER_LEAVE_GRACE_SECONDS = 8
     FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS = 60
     IDENTITY_TOKEN_TTL_SECONDS = 300
+    CHAT_COOLDOWN_SECONDS = 0.8
 
     def __init__(
         self,
@@ -246,6 +247,48 @@ class RoomManager:
             visitor = self._visitor(room, visitor_token)
             visitor.connected = False
             visitor.left_at = time.time()
+
+    async def begin_room_chat(
+        self, room: GameRoom, visitor_token: str, text: str
+    ) -> tuple[Visitor, str, bool, bool]:
+        """Publish one UI chat message and return its authoritative room role."""
+        cleaned = " ".join(str(text or "").strip().split())
+        if not cleaned:
+            raise ValueError("消息不能为空")
+        if len(cleaned) > 500:
+            raise ValueError("单条消息不能超过 500 个字符")
+        now = time.time()
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if now - visitor.last_chat_at < self.CHAT_COOLDOWN_SECONDS:
+                raise ValueError("发送得太快了，请稍后再试")
+            visitor.last_chat_at = now
+            is_player = self._is_player_token(room, visitor.token)
+            is_current_player = visitor.token == (
+                room.multiplayer.current_token
+                if room.multiplayer.enabled
+                else room.player_token
+            )
+            room.add_message("user", cleaned, visitor=visitor)
+            room.record_chat_memory(visitor, "user", cleaned)
+            room.touch()
+            return visitor, cleaned, is_player, is_current_player
+
+    async def add_room_chat_reply(
+        self, room: GameRoom, visitor: Visitor, text: str, *, message_type: str = "chat"
+    ) -> None:
+        """Publish a Bot reply and privately associate it with the addressed QQ."""
+        async with room.lock:
+            if room.status == "closed" or room.room_id not in self.rooms:
+                return
+            room.add_message("bot", text, message_type=message_type)
+            room.record_chat_memory(visitor, "bot", text)
+
+    @staticmethod
+    def _is_player_token(room: GameRoom, visitor_token: str) -> bool:
+        if room.multiplayer.enabled:
+            return room.multiplayer.seat_for_token(visitor_token) is not None
+        return bool(room.player_token and room.player_token == visitor_token)
 
     async def claim_and_start(
         self, room: GameRoom, visitor_token: str, side: str
@@ -651,7 +694,9 @@ class RoomManager:
         elif bot_turn:
             await self._bot_turn(room)
 
-    async def request_rematch(self, room: GameRoom, visitor_token: str) -> None:
+    async def request_rematch(
+        self, room: GameRoom, visitor_token: str, *, record_message: bool = True
+    ) -> None:
         """Put a finished room into a Bot-decided rematch request state."""
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
@@ -666,8 +711,13 @@ class RoomManager:
                 raise ValueError("当前还不能申请再来一局")
             room.status = "rematch_pending"
             room.touch()
-            room.add_message("user", "想再来一局。")
-        await self._emit("rematch_requested", room, {})
+            if record_message:
+                room.add_message(
+                    "user", "想再来一局。", visitor=visitor, message_type="control"
+                )
+        await self._emit(
+            "rematch_requested", room, {"visitor_token": visitor_token}
+        )
 
     async def resolve_rematch(
         self,
@@ -1100,7 +1150,15 @@ class RoomManager:
             hint = game.reveal_hint(source=source, player_number=player_number)
             room.touch()
             self._advance_multiplayer_turn(room)
-        await self._emit("soup_hint_revealed", room, {"source": source, "hint": hint})
+        await self._emit(
+            "soup_hint_revealed",
+            room,
+            {
+                "source": source,
+                "hint": hint,
+                "visitor_token": visitor_token,
+            },
+        )
         return hint
 
     async def resolve_reverse_turtle_soup_turn(

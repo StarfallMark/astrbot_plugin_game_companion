@@ -39,7 +39,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.1.6"
+    assert metadata["version"] == "0.1.7"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -110,27 +110,24 @@ def test_management_page_can_switch_games_and_install_engine() -> None:
     assert "confirmAction" in script
 
 
-def test_turtle_soup_webui_has_no_game_switcher_and_keeps_failed_input() -> None:
+def test_webui_uses_one_room_chat_composer_for_turtle_soup_and_controls() -> None:
     script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     styles = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
 
     assert 'id="soupStage"' in page
-    assert 'id="soupInput"' in page
+    assert 'id="chatComposer"' in page
+    assert 'id="chatInput"' in page
     assert 'id="soupSolution"' in page
-    assert 'request("POST", action, { visitor_token: visitorToken, text })' in script
-    assert 'request("POST", "soup/hint"' in script
+    assert 'request("POST", "chat"' in script
     assert '["turtle_soup", "pig_dice"].includes(room.game_type)' in script
     assert ".side-choice[hidden] { display: none; }" in styles
-    assert 'soupInput.value = "";' in script
-    failure_branch = script.index('showToast(error?.message || "Bot 暂时无法判断")')
-    success_clear = script.index('soupInput.value = "";')
-    assert success_clear < failure_branch
+    assert 'chatInput.value = "";' in script
+    assert "function submitChat" in script
     assert "switch_game" not in script
     assert "切换游戏" not in page
-    assert '"soup/reverse"' in script
     assert 'request("POST", "seat/swap/request"' in script
-    assert 'id="soupCorrectAction"' in page
+    assert 'id="messages"' in page
 
 
 def test_room_expiry_does_not_stop_the_shared_access_channel() -> None:
@@ -143,9 +140,9 @@ def test_room_expiry_does_not_stop_the_shared_access_channel() -> None:
 def test_natural_language_rematch_is_routed_to_the_existing_room() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
 
-    assert 'elif action == "rematch"' in source
-    assert "restart_finished_game" in source
-    assert "绝不能 close 后调用创建工具" in source
+    assert 'action == "rematch"' in source
+    assert "request_rematch" in source
+    assert "全部由用户进入 WebUI 后完成" in source
 
 
 def test_pig_dice_webui_and_qq_menu_are_registered() -> None:
@@ -168,8 +165,9 @@ def test_fast_game_replies_do_not_pollute_normal_conversation_history() -> None:
     assert "_sync_conversation_pair" not in source
     assert "add_message_pair" not in source
     assert "record_shared_experience" in source
-    assert "当前请求专用的临时游戏状态" in source
-    assert "最近游戏回复只用于理解用户的承接和指代" in source
+    assert "submit_room_chat" in source
+    assert "WebUI 的房间中与用户聊天" in source
+    assert "_memory_context_for_visitor" in source
 
 
 def test_tictactoe_is_available_to_natural_language_tools() -> None:

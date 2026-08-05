@@ -27,7 +27,7 @@ def make_room(*, game_type: str = "pig_dice") -> GameRoom:
 
 
 @pytest.mark.asyncio
-async def test_normal_chat_gets_ephemeral_scores_and_recent_fast_replies() -> None:
+async def test_qq_chat_isolated_from_active_webui_room() -> None:
     room = make_room()
     room.game = PigDiceGame(
         turn="bot", human_score=21, bot_score=34, turn_total=8, last_roll=5
@@ -50,15 +50,7 @@ async def test_normal_chat_gets_ephemeral_scores_and_recent_fast_replies() -> No
 
     await plugin.inject_game_context(event, request)
 
-    prompt = request.system_prompt
-    assert "原始系统提示" in prompt
-    assert "当前请求专用的临时游戏状态" in prompt
-    assert "玩家已存 21 分，Bot 已存 34 分" in prompt
-    assert "Bot 已存总分领先 13 分" in prompt
-    assert "我这回合还想继续冒险。" in prompt
-    assert "看来我现在暂时领先。" in prompt
-    assert "第一句较早的快速回复" not in prompt
-    assert "另一种游戏的旧回复" not in prompt
+    assert request.system_prompt == "原始系统提示"
 
 
 @pytest.mark.asyncio
@@ -86,7 +78,4 @@ async def test_turtle_soup_live_context_never_exposes_hidden_solution() -> None:
 
     await plugin.inject_game_context(event, request)
 
-    assert "题目《测试汤面》" in request.system_prompt
-    assert "发现公开关键进度 1/2" in request.system_prompt
-    assert puzzle.solution not in request.system_prompt
-    assert "事实一" not in request.system_prompt
+    assert request.system_prompt == ""
