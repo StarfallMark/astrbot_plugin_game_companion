@@ -1,7 +1,7 @@
 name: astrbot_plugin_game_companion
 display_name: 游戏伴侣
 author: StarfallMark
-version: 0.1.9
+version: 0.1.10
 description: 让 Bot 与用户通过安全的可视化房间自然地一起玩游戏，并延续现有陪伴人格与长期记忆。
 desc: 通过自然语言切换五子棋、中国象棋、井字棋、多人海龟汤、贪心骰子与你画我猜，支持人格化对局和可视化交互。
 repo: https://github.com/StarfallMark/astrbot_plugin_game_companion

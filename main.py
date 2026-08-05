@@ -29,6 +29,7 @@ from .server import GameRoomServer
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
 from .tictactoe import X as TICTACTOE_X
+from .trusted_identity import TrustedIdentityStore
 from .tunnel import QuickTunnel
 from .turtle_soup import (
     VERDICT_LABELS,
@@ -56,7 +57,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.1.9"
+PLUGIN_VERSION = "0.1.10"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
@@ -84,6 +85,25 @@ class GameCompanionPlugin(Star):
             self._cfg_str("server.public_base_url", "")
         )
         self.auto_quick_tunnel = self._cfg_bool("server.auto_quick_tunnel", True)
+        self.trusted_browser_requested = self._cfg_bool(
+            "identity.enable_trusted_browser", False
+        )
+        self.trusted_browser_ttl_days = self._cfg_int(
+            "identity.trusted_browser_ttl_days", 30, minimum=1, maximum=365
+        )
+        self.trusted_browser_enabled = bool(
+            self.trusted_browser_requested and self.public_base_url
+        )
+        public_path = urlsplit(self.public_base_url).path.rstrip("/")
+        self.trusted_browser_cookie_path = public_path or "/"
+        self.trusted_identity_store = TrustedIdentityStore(
+            self.data_dir / "trusted_browsers.json",
+            ttl_days=self.trusted_browser_ttl_days,
+        )
+        if self.trusted_browser_requested and not self.public_base_url:
+            logger.warning(
+                "[GameCompanion] 受信任浏览器需要固定 HTTPS 外部地址，当前已自动禁用"
+            )
 
         self.group_rooms_enabled = self._cfg_bool("rooms.enable_group_rooms", True)
         self.private_rooms_enabled = self._cfg_bool("rooms.enable_private_rooms", True)
@@ -366,6 +386,22 @@ class GameCompanionPlugin(Star):
             "直接用自然语言告诉 Bot 想玩哪个游戏即可。",
         ]
         yield event.plain_result("\n".join(lines))
+
+    @game_commands.command("撤销网页绑定", alias={"撤销浏览器绑定", "撤销受信任浏览器"})
+    async def revoke_trusted_browsers(self, event: AstrMessageEvent):
+        """Revoke every persistent game-browser credential owned by the sender."""
+        qq = str(event.get_sender_id() or "").strip()
+        if not qq.isdigit():
+            yield event.plain_result("无法识别当前 QQ，未撤销网页绑定。")
+            return
+        count = await self.trusted_identity_store.revoke_qq(qq)
+        if count:
+            yield event.plain_result(
+                f"已撤销 {count} 个受信任浏览器。当前房间身份保持到房间结束，"
+                "以后进入新房间需要重新绑定。"
+            )
+        else:
+            yield event.plain_result("当前 QQ 没有有效的受信任浏览器绑定。")
 
     async def _bind_game_player_text(
         self, event: AstrMessageEvent, identity_token: str

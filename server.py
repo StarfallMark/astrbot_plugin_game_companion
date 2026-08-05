@@ -19,6 +19,7 @@ class GameRoomServer:
 
     ASSETS = {"index.html", "app.css", "app.js", "lucide.min.js"}
     TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{24,80}")
+    TRUSTED_BROWSER_COOKIE = "game_companion_device"
 
     def __init__(
         self,
@@ -92,6 +93,9 @@ class GameRoomServer:
         app.router.add_get("/health", self._health)
         app.router.add_post("/api/room/{access_token}/join", self._join)
         app.router.add_get("/api/room/{access_token}/state", self._state)
+        app.router.add_post(
+            "/api/room/{access_token}/identity/forget", self._forget_identity
+        )
         app.router.add_post("/api/room/{access_token}/claim", self._claim)
         app.router.add_post("/api/room/{access_token}/start", self._start_game)
         app.router.add_post("/api/room/{access_token}/move", self._move)
@@ -162,19 +166,53 @@ class GameRoomServer:
         self._require_origin(request)
         room = self._room(request)
         payload = await self._payload(request)
-        visitor = await self.manager.join(room, str(payload.get("visitor_token") or ""))
-        return self._response(
+        trusted_identity = await self._resolve_trusted_identity(request)
+        visitor = await self.manager.join(
+            room,
+            str(payload.get("visitor_token") or ""),
+            trusted_identity=trusted_identity,
+        )
+        return await self._identity_response(
+            request,
+            room,
+            visitor,
             {
                 "visitor_token": visitor.token,
-                "room": room.public_snapshot(visitor.token),
-            }
+            },
+            remember=payload.get("remember_identity") is True,
+            trusted_identity=trusted_identity,
         )
 
     async def _state(self, request: web.Request) -> web.Response:
         room = self._room(request)
         visitor_token = str(request.query.get("visitor_token") or "")
+        visitor = await self.manager.heartbeat(room, visitor_token)
+        return await self._identity_response(
+            request,
+            room,
+            visitor,
+            {},
+            remember=str(request.query.get("remember_identity") or "") == "1",
+        )
+
+    async def _forget_identity(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.heartbeat(room, visitor_token)
-        return self._response({"room": room.public_snapshot(visitor_token)})
+        raw_token = str(request.cookies.get(self.TRUSTED_BROWSER_COOKIE) or "")
+        store = getattr(self.plugin, "trusted_identity_store", None)
+        if store is not None and raw_token:
+            await store.revoke_token(raw_token)
+        snapshot = room.public_snapshot(visitor_token)
+        snapshot.update(self._trusted_browser_snapshot(active=False, expires_at=0))
+        response = self._response({"room": snapshot, "forgotten": True})
+        response.del_cookie(
+            self.TRUSTED_BROWSER_COOKIE,
+            path=self._trusted_cookie_path(),
+        )
+        return response
 
     async def _claim(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -378,6 +416,110 @@ class GameRoomServer:
         payload = await self._payload(request)
         await self.manager.leave(room, str(payload.get("visitor_token") or ""))
         return self._response({"left": True})
+
+    async def _resolve_trusted_identity(self, request: web.Request) -> Any | None:
+        if not self._trusted_browser_enabled():
+            return None
+        store = getattr(self.plugin, "trusted_identity_store", None)
+        if store is None:
+            return None
+        token = str(request.cookies.get(self.TRUSTED_BROWSER_COOKIE) or "")
+        return await store.resolve(token)
+
+    async def _identity_response(
+        self,
+        request: web.Request,
+        room: GameRoom,
+        visitor: Any,
+        data: dict[str, Any],
+        *,
+        remember: bool,
+        trusted_identity: Any | None = None,
+    ) -> web.Response:
+        issued_token = ""
+        identity = (
+            trusted_identity
+            if trusted_identity is not None
+            else await self._resolve_trusted_identity(request)
+        )
+        active = bool(
+            identity is not None
+            and visitor.identity_confirmed
+            and identity.qq == visitor.qq
+        )
+        enrollment_pending = bool(
+            getattr(visitor, "trusted_browser_enrollment_pending", False)
+        )
+        if (
+            self._trusted_browser_enabled()
+            and remember
+            and not room.admin_room
+            and enrollment_pending
+            and visitor.identity_confirmed
+            and visitor.qq
+            and not active
+        ):
+            store = getattr(self.plugin, "trusted_identity_store", None)
+            if store is not None:
+                old_token = str(
+                    request.cookies.get(self.TRUSTED_BROWSER_COOKIE) or ""
+                )
+                if old_token:
+                    await store.revoke_token(old_token)
+                issued_token, identity = await store.issue(
+                    visitor.qq, visitor.display_name
+                )
+                active = True
+        if enrollment_pending:
+            visitor.trusted_browser_enrollment_pending = False
+        snapshot = room.public_snapshot(visitor.token)
+        snapshot.update(
+            self._trusted_browser_snapshot(
+                active=active,
+                expires_at=float(getattr(identity, "expires_at", 0) or 0)
+                if active
+                else 0,
+            )
+        )
+        response = self._response({**data, "room": snapshot})
+        if issued_token:
+            ttl_days = int(
+                getattr(self.plugin, "trusted_browser_ttl_days", 30) or 30
+            )
+            response.set_cookie(
+                self.TRUSTED_BROWSER_COOKIE,
+                issued_token,
+                max_age=max(1, min(ttl_days, 365)) * 86400,
+                path=self._trusted_cookie_path(),
+                secure=True,
+                httponly=True,
+                samesite="Lax",
+            )
+        return response
+
+    def _trusted_browser_snapshot(
+        self, *, active: bool, expires_at: float
+    ) -> dict[str, object]:
+        enabled = self._trusted_browser_enabled()
+        return {
+            "trusted_browser_available": enabled,
+            "trusted_browser_active": bool(enabled and active),
+            "trusted_browser_expires_at": expires_at if enabled and active else 0,
+            "trusted_browser_ttl_days": int(
+                getattr(self.plugin, "trusted_browser_ttl_days", 30) or 30
+            ),
+        }
+
+    def _trusted_browser_enabled(self) -> bool:
+        return bool(
+            getattr(self.plugin, "trusted_browser_enabled", False)
+            and getattr(self.plugin, "public_base_url", "")
+            and getattr(self.plugin, "trusted_identity_store", None) is not None
+        )
+
+    def _trusted_cookie_path(self) -> str:
+        path = str(getattr(self.plugin, "trusted_browser_cookie_path", "/") or "/")
+        return path if path.startswith("/") else "/"
 
     @web.middleware
     async def _error_middleware(

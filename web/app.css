@@ -413,6 +413,15 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; }
 .identity-challenge[hidden] { display: none; }
 .identity-challenge code { letter-spacing: .12em; color: #215c45; font-size: 18px; font-weight: 800; }
 .identity-challenge small { color: #707873; font-size: 11px; line-height: 1.4; }
+.remember-identity { display: flex; align-items: center; gap: 7px; margin-top: 3px; color: #505b54; font-size: 12px; }
+.remember-identity[hidden] { display: none; }
+.remember-identity input { width: 15px; height: 15px; accent-color: #215c45; }
+.trusted-identity-status { display: grid; grid-template-columns: 18px 1fr 30px; align-items: center; gap: 7px; margin: 10px 0; color: #365d4c; font-size: 12px; }
+.trusted-identity-status[hidden] { display: none; }
+.trusted-identity-status > svg { width: 17px; height: 17px; }
+.trusted-identity-status button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 4px; background: #edf1ee; color: #4f5b54; }
+.trusted-identity-status button[hidden] { display: none; }
+.trusted-identity-status button svg { width: 15px; height: 15px; }
 .section-head { justify-content: space-between; gap: 12px; }
 .section-head > svg { width: 18px; color: #6a746e; }
 .seat-badge { padding: 4px 7px; border-radius: 4px; background: #eceeed; color: #555e58; font-size: 12px; }

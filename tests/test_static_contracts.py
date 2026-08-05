@@ -17,6 +17,9 @@ def test_config_defaults_match_product_contract() -> None:
     assert rooms["empty_player_timeout_seconds"]["default"] == 60
     assert rooms["idle_timeout_seconds"]["default"] == 300
     assert rooms["allow_non_admin_group_creation"]["default"] is False
+    identity = schema["identity"]["items"]
+    assert identity["enable_trusted_browser"]["default"] is False
+    assert identity["trusted_browser_ttl_days"]["default"] == 30
     assert schema["xiangqi"]["items"]["allow_engine_download"]["default"] is True
     assert schema["xiangqi"]["items"]["auto_download_engine"]["default"] is False
     assert schema["turtle_soup"]["items"]["max_hints"]["default"] == 3
@@ -48,7 +51,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.1.9"
+    assert metadata["version"] == "0.1.10"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -59,6 +62,18 @@ def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
         content = page.read_text(encoding="utf-8")
         assert "https://" not in content
         assert "<script>" not in content
+
+
+def test_trusted_browser_controls_are_registered_without_exposing_cookie() -> None:
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+    assert 'id="rememberIdentity"' in page
+    assert 'id="forgetIdentity"' in page
+    assert 'request("POST", "identity/forget"' in script
+    assert 'httponly=True' in server
+    assert 'secure=True' in server
 
 
 def test_player_move_is_rendered_before_waiting_for_bot_response() -> None:

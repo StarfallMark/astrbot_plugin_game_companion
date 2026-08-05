@@ -25,6 +25,7 @@ from .pikafish import PikafishService
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
 from .tictactoe import X as TICTACTOE_X
+from .trusted_identity import TrustedIdentity
 from .turtle_soup import (
     SoupContentLevel,
     SoupPuzzle,
@@ -149,11 +150,42 @@ class RoomManager:
         """Return rooms attached to one real AstrBot conversation."""
         return [room for room in self.rooms.values() if room.session_id == session_id]
 
-    async def join(self, room: GameRoom, visitor_token: str = "") -> Visitor:
+    async def join(
+        self,
+        room: GameRoom,
+        visitor_token: str = "",
+        *,
+        trusted_identity: TrustedIdentity | None = None,
+    ) -> Visitor:
         """Resume a browser identity or assign the next stable room number."""
         async with room.lock:
             visitor = room.visitors.get(str(visitor_token or ""))
-            if visitor is None:
+            if trusted_identity is not None:
+                existing = next(
+                    (
+                        item
+                        for item in room.visitors.values()
+                        if item.identity_confirmed and item.qq == trusted_identity.qq
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    visitor = existing
+                elif visitor is None or (
+                    visitor.identity_confirmed
+                    and visitor.qq != trusted_identity.qq
+                ):
+                    visitor = Visitor(number=room.next_visitor_number)
+                    room.next_visitor_number += 1
+                    room.visitors[visitor.token] = visitor
+                self._confirm_visitor_identity(
+                    room,
+                    visitor,
+                    trusted_identity.qq,
+                    trusted_identity.display_name,
+                    allow_trusted_enrollment=False,
+                )
+            elif visitor is None:
                 visitor = Visitor(number=room.next_visitor_number)
                 room.next_visitor_number += 1
                 room.visitors[visitor.token] = visitor
@@ -214,19 +246,13 @@ class RoomManager:
                 )
                 if existing is not None:
                     raise ValueError("这个 QQ 已经绑定了本房间的其他访客")
-                visitor.qq = normalized_qq
-                visitor.display_name = str(display_name or "").strip()[:40]
-                visitor.identity_confirmed = True
-                visitor.binding_token = ""
-                visitor.binding_expires_at = 0.0
-                seat = room.multiplayer.seat_for_token(visitor.token)
-                if seat is not None:
-                    seat.qq = visitor.qq
-                    seat.display_name = visitor.display_name
-                    seat.identity_confirmed = True
-                    room.confirmed_participant_qqs.add(visitor.qq)
-                    room.participant_names[visitor.qq] = visitor.display_name
-                    self._sync_primary_player(room)
+                self._confirm_visitor_identity(
+                    room,
+                    visitor,
+                    normalized_qq,
+                    display_name,
+                    allow_trusted_enrollment=True,
+                )
                 room.touch()
                 return room, visitor
         raise ValueError("身份令牌无效、已使用或已过期")
@@ -241,7 +267,7 @@ class RoomManager:
                 raise PermissionError("请先在 QQ 中绑定页面令牌，再进入玩家席")
             return visitor
 
-    async def heartbeat(self, room: GameRoom, visitor_token: str) -> None:
+    async def heartbeat(self, room: GameRoom, visitor_token: str) -> Visitor:
         """Refresh presence without extending the room activity deadline."""
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
@@ -249,6 +275,7 @@ class RoomManager:
             visitor.last_seen_at = time.time()
             visitor.left_at = None
             visitor.ensure_binding_token(ttl=self.IDENTITY_TOKEN_TTL_SECONDS)
+            return visitor
 
     async def leave(self, room: GameRoom, visitor_token: str) -> None:
         """Record a browser departure without extending meaningful activity."""
@@ -1882,6 +1909,30 @@ class RoomManager:
                 {"color": color, "width": round(width, 2), "points": points}
             )
         return normalized
+
+    def _confirm_visitor_identity(
+        self,
+        room: GameRoom,
+        visitor: Visitor,
+        qq: str,
+        display_name: str,
+        *,
+        allow_trusted_enrollment: bool,
+    ) -> None:
+        visitor.qq = str(qq or "").strip()
+        visitor.display_name = str(display_name or "").strip()[:40]
+        visitor.identity_confirmed = True
+        visitor.binding_token = ""
+        visitor.binding_expires_at = 0.0
+        visitor.trusted_browser_enrollment_pending = allow_trusted_enrollment
+        seat = room.multiplayer.seat_for_token(visitor.token)
+        if seat is not None:
+            seat.qq = visitor.qq
+            seat.display_name = visitor.display_name
+            seat.identity_confirmed = True
+            room.confirmed_participant_qqs.add(visitor.qq)
+            room.participant_names[visitor.qq] = visitor.display_name
+            self._sync_primary_player(room)
 
     @staticmethod
     def _difficulty_label(difficulty: Difficulty) -> str:

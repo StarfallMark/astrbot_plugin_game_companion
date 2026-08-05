@@ -4,6 +4,7 @@
   const match = window.location.pathname.match(/\/room\/([A-Za-z0-9_-]{24,80})\/?$/);
   const accessToken = match ? match[1] : "";
   const storageKey = `game-companion:${accessToken}:visitor`;
+  const rememberIdentityKey = "game-companion:remember-identity";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
   const soupStage = document.getElementById("soupStage");
@@ -46,6 +47,28 @@
     toastTimer = window.setTimeout(() => { toast.hidden = true; }, 2600);
   }
 
+  function rememberIdentity() {
+    return window.localStorage.getItem(rememberIdentityKey) !== "0";
+  }
+
+  function setRoom(nextRoom) {
+    if (!nextRoom) {
+      room = nextRoom;
+      return;
+    }
+    if (room) {
+      [
+        "trusted_browser_available",
+        "trusted_browser_active",
+        "trusted_browser_expires_at",
+        "trusted_browser_ttl_days",
+      ].forEach((key) => {
+        if (nextRoom[key] === undefined) nextRoom[key] = room[key];
+      });
+    }
+    room = nextRoom;
+  }
+
   async function request(method, action, payload = {}) {
     const response = await window.fetch(endpoint(action), {
       method,
@@ -63,10 +86,13 @@
 
   async function join() {
     if (!accessToken) throw new Error("房间链接无效");
-    const data = await request("POST", "join", { visitor_token: visitorToken });
+    const data = await request("POST", "join", {
+      visitor_token: visitorToken,
+      remember_identity: rememberIdentity(),
+    });
     visitorToken = String(data.visitor_token || "");
     window.localStorage.setItem(storageKey, visitorToken);
-    room = data.room;
+    setRoom(data.room);
     lastSeenMessageId = latestMessageId(room);
     syncGameUi();
     render();
@@ -91,14 +117,17 @@
 
   async function loadState() {
     const response = await window.fetch(
-      endpoint("state", `?visitor_token=${encodeURIComponent(visitorToken)}`),
+      endpoint(
+        "state",
+        `?visitor_token=${encodeURIComponent(visitorToken)}&remember_identity=${rememberIdentity() ? "1" : "0"}`,
+      ),
       { cache: "no-store" },
     );
     const data = await response.json();
     if (!response.ok) throw new Error(data?.message || "房间状态不可用");
     const previousType = room?.game_type;
     const previousMessageId = latestMessageId(room);
-    room = data?.data?.room;
+    setRoom(data?.data?.room);
     if (previousType !== room?.game_type) {
       selectedPiece = null;
       pendingMove = null;
@@ -281,6 +310,11 @@
     const identityChallenge = document.getElementById("identityChallenge");
     const identityToken = document.getElementById("identityToken");
     const identityTokenNote = document.getElementById("identityTokenNote");
+    const rememberOption = document.getElementById("rememberIdentityOption");
+    const rememberInput = document.getElementById("rememberIdentity");
+    const trustedStatus = document.getElementById("trustedIdentityStatus");
+    const trustedText = document.getElementById("trustedIdentityText");
+    const forgetIdentity = document.getElementById("forgetIdentity");
     const sideChoice = document.getElementById("sideChoice");
     badge.textContent = room.is_player ? "玩家席" : "观众席";
     badge.className = `seat-badge ${room.is_player ? "player" : ""}`;
@@ -289,6 +323,15 @@
     action.disabled = busy;
     const identityRequired = !room.admin_room && !room.player_confirmed;
     identityChallenge.hidden = !identityRequired;
+    rememberOption.hidden = !(identityRequired && room.trusted_browser_available);
+    rememberInput.checked = rememberIdentity();
+    trustedStatus.hidden = !(room.trusted_browser_available && room.player_confirmed);
+    if (!trustedStatus.hidden) {
+      trustedText.textContent = room.trusted_browser_active
+        ? "此浏览器已记住你的身份"
+        : "身份仅在当前房间有效";
+      forgetIdentity.hidden = !room.trusted_browser_active;
+    }
     if (identityRequired) {
       identityToken.textContent = room.identity_token || "--------";
       identityTokenNote.textContent = room.identity_token
@@ -382,7 +425,7 @@
         visitor_token: visitorToken,
         target_number: targetNumber,
       });
-      room = data.room;
+      setRoom(data.room);
       showToast("交换申请已发送");
     } catch (error) {
       showToast(error?.message || "无法发送交换申请");
@@ -401,10 +444,28 @@
         request_id: requestId,
         accepted,
       });
-      room = data.room;
+      setRoom(data.room);
       showToast(accepted ? "席位已交换" : "已拒绝交换申请");
     } catch (error) {
       showToast(error?.message || "无法处理交换申请");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  async function forgetTrustedIdentity() {
+    if (busy || !room?.trusted_browser_active) return;
+    busy = true;
+    try {
+      const data = await request("POST", "identity/forget", {
+        visitor_token: visitorToken,
+      });
+      setRoom(data.room);
+      window.localStorage.setItem(rememberIdentityKey, "0");
+      showToast("此浏览器已不再记住身份");
+    } catch (error) {
+      showToast(error?.message || "无法取消浏览器信任");
     } finally {
       busy = false;
       render();
@@ -713,7 +774,7 @@
     renderDrawGuess();
     try {
       const data = await request("POST", "draw/strokes", { visitor_token: visitorToken, strokes: drawStrokes });
-      room = data.room;
+      setRoom(data.room);
       drawRevision = Number(room.game?.revision ?? drawRevision);
       return true;
     } catch (error) {
@@ -741,7 +802,7 @@
       if (!(await syncDrawing())) return;
       const format = drawCanvas.toDataURL("image/webp", 0.78);
       const data = await request("POST", "draw/guess", { visitor_token: visitorToken, image_data_url: format });
-      room = data.room;
+      setRoom(data.room);
       showToast(data.correct ? "Bot 猜中了" : `Bot 猜：${data.guess}`);
     } catch (error) {
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
@@ -758,7 +819,7 @@
     renderPigDice();
     try {
       const data = await request("POST", "dice/action", { visitor_token: visitorToken, action });
-      room = data.room;
+      setRoom(data.room);
       render();
     } catch (error) {
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
@@ -788,7 +849,7 @@
     render();
     try {
       const data = await request("POST", "chat", { visitor_token: visitorToken, text });
-      room = data.room;
+      setRoom(data.room);
       chatInput.value = "";
       chatInput.style.height = "";
     } catch (error) {
@@ -1167,7 +1228,7 @@
     try {
       const data = await request("POST", "move", { visitor_token: visitorToken, row, column });
       pendingMove = null;
-      room = data.room;
+      setRoom(data.room);
       render();
     } catch (error) {
       pendingMove = null;
@@ -1200,7 +1261,7 @@
     try {
       const data = await request("POST", "move", { visitor_token: visitorToken, row, column });
       pendingMove = null;
-      room = data.room;
+      setRoom(data.room);
       render();
     } catch (error) {
       pendingMove = null;
@@ -1243,7 +1304,7 @@
         try {
           const data = await request("POST", "move", { visitor_token: visitorToken, ...pendingMove });
           pendingMove = null;
-          room = data.room;
+          setRoom(data.room);
           render();
         } catch (error) {
           pendingMove = null;
@@ -1274,6 +1335,10 @@
     button.addEventListener("click", () => setRoomView(button.dataset.roomView));
   });
   document.getElementById("seatAction").addEventListener("click", seatAction);
+  document.getElementById("rememberIdentity").addEventListener("change", (event) => {
+    window.localStorage.setItem(rememberIdentityKey, event.target.checked ? "1" : "0");
+  });
+  document.getElementById("forgetIdentity").addEventListener("click", forgetTrustedIdentity);
   document.getElementById("chatComposer").addEventListener("submit", submitChat);
   chatInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {

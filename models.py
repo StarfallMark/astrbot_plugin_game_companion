@@ -114,6 +114,7 @@ class Visitor:
     identity_confirmed: bool = False
     binding_token: str = ""
     binding_expires_at: float = 0.0
+    trusted_browser_enrollment_pending: bool = False
     last_chat_at: float = 0.0
 
     BINDING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"

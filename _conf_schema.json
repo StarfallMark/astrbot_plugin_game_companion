@@ -35,6 +35,25 @@
       }
     }
   },
+  "identity": {
+    "description": "网页身份绑定",
+    "type": "object",
+    "hint": "受信任浏览器只在配置固定 HTTPS 外部地址时生效；临时隧道仍使用每房间一次性令牌。",
+    "items": {
+      "enable_trusted_browser": {
+        "description": "允许记住浏览器身份",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，用户首次通过 QQ 令牌确认时可选择记住当前浏览器。不会自动加入玩家席或恢复房间。"
+      },
+      "trusted_browser_ttl_days": {
+        "description": "受信任浏览器有效天数",
+        "type": "int",
+        "default": 30,
+        "hint": "范围 1-365；过期后需要重新通过 QQ 令牌绑定。每个 QQ 最多保留 8 台设备。"
+      }
+    }
+  },
   "rooms": {
     "description": "房间权限与并行数量",
     "type": "object",
