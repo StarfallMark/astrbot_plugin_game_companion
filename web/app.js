@@ -8,6 +8,9 @@
   const boardStage = document.querySelector(".board-stage");
   const soupStage = document.getElementById("soupStage");
   const diceStage = document.getElementById("diceStage");
+  const drawStage = document.getElementById("drawStage");
+  const drawCanvas = document.getElementById("drawCanvas");
+  const drawContext = drawCanvas.getContext("2d");
   const chatInput = document.getElementById("chatInput");
   const context = board.getContext("2d");
   const toast = document.getElementById("toast");
@@ -23,6 +26,10 @@
   let activeRoomView = "game";
   let lastSeenMessageId = 0;
   let renderedDiceSequence = 0;
+  let drawStrokes = [];
+  let activeDrawStroke = null;
+  let drawSyncBusy = false;
+  let drawRevision = -1;
 
   function icons() {
     if (window.lucide?.createIcons) window.lucide.createIcons();
@@ -95,8 +102,11 @@
     if (previousType !== room?.game_type) {
       selectedPiece = null;
       pendingMove = null;
+      drawStrokes = [];
+      drawRevision = -1;
       syncGameUi();
     }
+    syncDrawState();
     if (
       activeRoomView !== "chat"
       && latestMessageId(room) > Math.max(previousMessageId, lastSeenMessageId)
@@ -163,6 +173,7 @@
       tictactoe: "井字棋",
       turtle_soup: "海龟汤",
       pig_dice: "贪心骰子",
+      draw_guess: "你画我猜",
     }[room?.game_type] || "棋类游戏";
   }
 
@@ -172,15 +183,17 @@
     const tictactoe = room.game_type === "tictactoe";
     const turtleSoup = room.game_type === "turtle_soup";
     const pigDice = room.game_type === "pig_dice";
+    const drawGuess = room.game_type === "draw_guess";
     document.title = `游戏伴侣 · ${gameLabel()}`;
     document.getElementById("gameTitle").textContent = gameLabel();
     document.getElementById("brandIcon").setAttribute(
       "data-lucide",
-      turtleSoup ? "shell" : (pigDice ? "dice-5" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3"))),
+      turtleSoup ? "shell" : (pigDice ? "dice-5" : (drawGuess ? "paintbrush" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")))),
     );
-    boardStage.hidden = turtleSoup || pigDice;
+    boardStage.hidden = turtleSoup || pigDice || drawGuess;
     soupStage.hidden = !turtleSoup;
     diceStage.hidden = !pigDice;
+    drawStage.hidden = !drawGuess;
     boardStage.classList.toggle("xiangqi", xiangqi);
     boardStage.classList.toggle("tictactoe", tictactoe);
     board.width = xiangqi ? 720 : 760;
@@ -193,6 +206,8 @@
         ? "贪心骰子操作区"
         : xiangqi
         ? "九乘十中国象棋棋盘"
+        : drawGuess
+        ? "你画我猜作画区"
         : (tictactoe ? "三乘三井字棋棋盘" : "十五乘十五五子棋棋盘"),
     );
     const buttons = Array.from(document.querySelectorAll("[data-side]"));
@@ -209,6 +224,7 @@
       button.classList.toggle("is-active", index === 0);
     });
     icons();
+    syncDrawState();
   }
 
   function render() {
@@ -234,6 +250,7 @@
       : "和 Bot 说点什么";
     document.getElementById("chatSend").disabled = chatBusy;
     const pigDice = room.game_type === "pig_dice";
+    const drawGuess = room.game_type === "draw_guess";
     document.getElementById("difficulty").textContent = pigDice
       ? ({ easy: "稳健", normal: "均衡", hard: "大胆" }[room.difficulty] || "均衡")
       : difficultyLabel(room.difficulty);
@@ -242,15 +259,16 @@
     document.getElementById("drawScore").textContent = room.score?.draws ?? 0;
     const turtleSoup = room.game_type === "turtle_soup";
     const playerHostedSoup = turtleSoup && room.turtle_soup_mode === "player_host";
-    document.getElementById("humanScoreLabel").textContent = turtleSoup ? (playerHostedSoup ? "玩家" : "解开") : "玩家";
-    document.getElementById("drawScoreLabel").textContent = turtleSoup ? "总题数" : (pigDice ? "总局数" : "平局");
-    document.getElementById("botScoreLabel").textContent = turtleSoup ? (playerHostedSoup ? "Bot 猜中" : "放弃") : "Bot";
-    if (turtleSoup || pigDice) document.getElementById("drawScore").textContent = room.score?.games ?? 0;
+    document.getElementById("humanScoreLabel").textContent = drawGuess ? "猜中" : turtleSoup ? (playerHostedSoup ? "玩家" : "解开") : "玩家";
+    document.getElementById("drawScoreLabel").textContent = drawGuess ? "总轮数" : turtleSoup ? "总题数" : (pigDice ? "总局数" : "平局");
+    document.getElementById("botScoreLabel").textContent = drawGuess ? "未猜中" : turtleSoup ? (playerHostedSoup ? "Bot 猜中" : "放弃") : "Bot";
+    if (turtleSoup || pigDice || drawGuess) document.getElementById("drawScore").textContent = room.score?.games ?? 0;
     renderSeat();
     renderPeople();
     renderMessages();
     renderTurtleSoup();
     renderPigDice();
+    renderDrawGuess();
     drawBoard();
     renderTurn();
     icons();
@@ -266,7 +284,7 @@
     const sideChoice = document.getElementById("sideChoice");
     badge.textContent = room.is_player ? "玩家席" : "观众席";
     badge.className = `seat-badge ${room.is_player ? "player" : ""}`;
-    sideChoice.hidden = ["turtle_soup", "pig_dice"].includes(room.game_type) || !(["waiting", "setup", "finished"].includes(room.status));
+    sideChoice.hidden = ["turtle_soup", "pig_dice", "draw_guess"].includes(room.game_type) || !(["waiting", "setup", "finished"].includes(room.status));
     action.hidden = false;
     action.disabled = busy;
     const identityRequired = !room.admin_room && !room.player_confirmed;
@@ -301,6 +319,8 @@
           : '<i data-lucide="sparkles"></i><span>开始出题</span>'
         : room.game_type === "pig_dice"
         ? '<i data-lucide="dice-5"></i><span>开始掷骰</span>'
+        : room.game_type === "draw_guess"
+        ? '<i data-lucide="paintbrush"></i><span>开始作画</span>'
         : '<i data-lucide="play"></i><span>开始新一局</span>';
       note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不允许进入玩家席。";
     } else if (room.status === "finished") {
@@ -568,6 +588,170 @@
     document.getElementById("diceHoldAction").disabled = !canAct || !(game?.turn_total > 0);
   }
 
+  function syncDrawState() {
+    if (room?.game_type !== "draw_guess") return;
+    const serverGame = room.game || {};
+    if (!activeDrawStroke && !drawSyncBusy && Number(serverGame.revision ?? -1) >= drawRevision) {
+      drawStrokes = Array.isArray(serverGame.strokes) ? serverGame.strokes : [];
+      drawRevision = Number(serverGame.revision ?? 0);
+    }
+  }
+
+  function renderDrawGuess() {
+    if (room?.game_type !== "draw_guess") return;
+    syncDrawState();
+    const game = room.game || {};
+    const remaining = room.status === "paused"
+      ? Number(game.remaining_seconds || 0)
+      : Math.max(0, Math.ceil(Number(game.deadline || 0) - Number(room.server_time || Date.now() / 1000)));
+    document.getElementById("drawTimer").textContent = !room.game
+      ? "等待开始"
+      : game.finished
+      ? (game.solved ? "已猜中" : game.timed_out ? "已超时" : "本轮结束")
+      : `${remaining} 秒`;
+    document.getElementById("drawGuessCount").textContent = `猜测 ${game.guess_count || 0} / ${game.max_guesses || 5}`;
+    const prompt = document.getElementById("drawPrompt");
+    if (game.finished && game.answer) {
+      prompt.textContent = `答案是“${game.answer}”。${game.solved ? "这轮合作成功。" : "下一轮可以换个画法。"}`;
+    } else if (game.answer && room.is_player) {
+      prompt.textContent = `题目：${game.answer}。请把它画出来，观众和 Bot 不会看到答案。`;
+    } else if (game.processing) {
+      prompt.textContent = "Bot 正在看图，只会消耗一次猜测。";
+    } else if (!room.game) {
+      prompt.textContent = room.is_player ? "开始后，你会在这里看到题目。" : "等待玩家开始新一轮。";
+    } else {
+      prompt.textContent = room.is_player ? "画出题目后，点击“让 Bot 猜”；可以继续补画。" : "玩家正在作画，你可以在对话区和 Bot 聊天。";
+    }
+    drawContext.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+    drawContext.fillStyle = "#fffdf8";
+    drawContext.fillRect(0, 0, drawCanvas.width, drawCanvas.height);
+    drawStrokes.forEach(drawStroke);
+    const readonly = busy || !room.is_player || room.status !== "active" || game.processing || game.finished;
+    document.getElementById("drawColor").disabled = readonly;
+    document.getElementById("drawWidth").disabled = readonly;
+    document.getElementById("drawUndo").disabled = readonly || !drawStrokes.length || drawSyncBusy;
+    document.getElementById("drawClear").disabled = readonly || !drawStrokes.length || drawSyncBusy;
+    document.getElementById("drawGuessAction").disabled = readonly || !drawStrokes.length || drawSyncBusy;
+    const overlay = document.getElementById("drawCanvasOverlay");
+    overlay.hidden = !(room.status === "waiting" || room.status === "setup") || !room.is_player;
+    document.getElementById("drawOverlayTitle").textContent = room.status === "waiting" ? "先加入玩家席" : "准备开始作画";
+    document.getElementById("drawOverlayText").textContent = room.status === "waiting" ? "绑定身份后点击加入对局" : "点击右侧开始作画";
+    const history = document.getElementById("drawHistory");
+    history.replaceChildren();
+    const guesses = Array.isArray(game.guesses) ? game.guesses : [];
+    if (!guesses.length) {
+      const empty = document.createElement("p");
+      empty.className = "draw-empty";
+      empty.textContent = "Bot 的每次猜测会显示在这里";
+      history.appendChild(empty);
+    } else {
+      guesses.forEach((item) => {
+        const entry = document.createElement("div");
+        entry.className = `draw-guess ${item.correct ? "correct" : "wrong"}`;
+        entry.textContent = `第 ${item.number} 次：${item.guess}${item.correct ? " · 猜中" : " · 不对"}`;
+        history.appendChild(entry);
+      });
+    }
+  }
+
+  function drawStroke(stroke) {
+    const points = Array.isArray(stroke?.points) ? stroke.points : [];
+    if (!points.length) return;
+    drawContext.beginPath();
+    drawContext.strokeStyle = stroke.color || "#202522";
+    drawContext.lineWidth = Number(stroke.width || 5);
+    drawContext.lineCap = "round";
+    drawContext.lineJoin = "round";
+    points.forEach(([x, y], index) => {
+      const px = Number(x) * drawCanvas.width;
+      const py = Number(y) * drawCanvas.height;
+      if (index === 0) drawContext.moveTo(px, py);
+      else drawContext.lineTo(px, py);
+    });
+    if (points.length === 1) drawContext.lineTo(Number(points[0][0]) * drawCanvas.width + .1, Number(points[0][1]) * drawCanvas.height + .1);
+    drawContext.stroke();
+  }
+
+  function drawPoint(event) {
+    const rect = drawCanvas.getBoundingClientRect();
+    return [
+      Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+    ];
+  }
+
+  function beginDrawing(event) {
+    if (busy || !room?.is_player || room.status !== "active" || room.game?.processing || room.game?.finished) return;
+    event.preventDefault();
+    drawCanvas.setPointerCapture?.(event.pointerId);
+    activeDrawStroke = {
+      color: document.getElementById("drawColor").value || "#202522",
+      width: Number(document.getElementById("drawWidth").value || 5),
+      points: [drawPoint(event)],
+    };
+    drawStrokes.push(activeDrawStroke);
+    renderDrawGuess();
+  }
+
+  function continueDrawing(event) {
+    if (!activeDrawStroke) return;
+    event.preventDefault();
+    activeDrawStroke.points.push(drawPoint(event));
+    renderDrawGuess();
+  }
+
+  async function finishDrawing(event) {
+    if (!activeDrawStroke) return;
+    event.preventDefault();
+    activeDrawStroke = null;
+    await syncDrawing();
+  }
+
+  async function syncDrawing() {
+    if (!room?.is_player || drawSyncBusy) return false;
+    drawSyncBusy = true;
+    renderDrawGuess();
+    try {
+      const data = await request("POST", "draw/strokes", { visitor_token: visitorToken, strokes: drawStrokes });
+      room = data.room;
+      drawRevision = Number(room.game?.revision ?? drawRevision);
+      return true;
+    } catch (error) {
+      showToast(error?.message || "画布同步失败");
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      return false;
+    } finally {
+      drawSyncBusy = false;
+      render();
+    }
+  }
+
+  async function changeDrawing(nextStrokes) {
+    if (busy || !room?.is_player || room.status !== "active" || room.game?.processing || room.game?.finished) return;
+    drawStrokes = nextStrokes;
+    await syncDrawing();
+  }
+
+  async function guessDrawing() {
+    if (busy || drawSyncBusy || !room?.is_player || room.status !== "active" || !drawStrokes.length) return;
+    busy = true;
+    renderDrawGuess();
+    try {
+      if (activeDrawStroke) activeDrawStroke = null;
+      if (!(await syncDrawing())) return;
+      const format = drawCanvas.toDataURL("image/webp", 0.78);
+      const data = await request("POST", "draw/guess", { visitor_token: visitorToken, image_data_url: format });
+      room = data.room;
+      showToast(data.correct ? "Bot 猜中了" : `Bot 猜：${data.guess}`);
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "Bot 暂时无法看图");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   async function diceAction(action) {
     if (busy || room?.game_type !== "pig_dice") return;
     busy = true;
@@ -639,6 +823,16 @@
                 : statusLabel(room.status);
       return;
     }
+    if (room.game_type === "draw_guess") {
+      stone.classList.add("o");
+      stone.textContent = room.game?.solved ? "✓" : "✎";
+      label.textContent = room.game?.processing
+        ? "Bot 看图中"
+        : room.status === "finished"
+        ? (room.game?.solved ? "合作猜中" : "本轮结束")
+        : room.is_player ? "轮到你作画" : "观看玩家作画";
+      return;
+    }
     if (room.game_type === "pig_dice") {
       stone.classList.add("o");
       stone.textContent = room.game?.last_roll || "?";
@@ -677,7 +871,7 @@
   }
 
   function drawBoard() {
-    if (["turtle_soup", "pig_dice"].includes(room?.game_type)) return;
+    if (["turtle_soup", "pig_dice", "draw_guess"].includes(room?.game_type)) return;
     if (room?.game_type === "xiangqi") drawXiangqi();
     else if (room?.game_type === "tictactoe") drawTicTacToe();
     else drawGomoku();
@@ -1093,6 +1287,13 @@
   });
   document.getElementById("diceRollAction").addEventListener("click", () => diceAction("roll"));
   document.getElementById("diceHoldAction").addEventListener("click", () => diceAction("hold"));
+  drawCanvas.addEventListener("pointerdown", beginDrawing);
+  drawCanvas.addEventListener("pointermove", continueDrawing);
+  drawCanvas.addEventListener("pointerup", finishDrawing);
+  drawCanvas.addEventListener("pointercancel", finishDrawing);
+  document.getElementById("drawUndo").addEventListener("click", () => changeDrawing(drawStrokes.slice(0, -1)));
+  document.getElementById("drawClear").addEventListener("click", () => changeDrawing([]));
+  document.getElementById("drawGuessAction").addEventListener("click", guessDrawing);
   board.addEventListener("click", moveAt);
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) notifyLeave();

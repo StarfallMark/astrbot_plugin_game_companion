@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import inspect
 import json
 import re
@@ -17,15 +19,16 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api.web import request
 
+from .draw_guess import DrawGuessGame
 from .gomoku import Difficulty, GomokuGame
 from .models import GameRoom, GameType, TurtleSoupMode, Visitor
-from .pikafish import PikafishService
 from .pig_dice import PigDiceGame
+from .pikafish import PikafishService
 from .room_manager import RoomManager
 from .server import GameRoomServer
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
-from .tictactoe import X as TICTACTOE_X
 from .tictactoe import TicTacToeGame
+from .tictactoe import X as TICTACTOE_X
 from .tunnel import QuickTunnel
 from .turtle_soup import (
     VERDICT_LABELS,
@@ -53,7 +56,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.1.8"
+PLUGIN_VERSION = "0.1.9"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
@@ -123,6 +126,15 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_max_players = self._cfg_non_negative(
             "turtle_soup.max_players", 6
         )
+        self.draw_guess_vision_provider_id = self._cfg_str(
+            "draw_guess.vision_provider_id", ""
+        )
+        self.draw_guess_max_guesses = self._cfg_int(
+            "draw_guess.max_guesses", 5, minimum=1, maximum=10
+        )
+        self.draw_guess_duration_seconds = self._cfg_int(
+            "draw_guess.duration_seconds", 120, minimum=10, maximum=600
+        )
         self.multiplayer_turn_timeout = self._cfg_non_negative(
             "multiplayer.turn_timeout_seconds", 60
         )
@@ -154,6 +166,8 @@ class GameCompanionPlugin(Star):
             multiplayer_turn_timeout=self.multiplayer_turn_timeout,
             swap_request_cooldown=self.swap_request_cooldown,
             swap_request_expiry=self.swap_request_expiry,
+            draw_guess_max_guesses=self.draw_guess_max_guesses,
+            draw_guess_duration_seconds=self.draw_guess_duration_seconds,
             xiangqi_engine=self.xiangqi_engine,
             event_callback=self._on_room_event,
         )
@@ -213,13 +227,13 @@ class GameCompanionPlugin(Star):
 
         难度必须由你结合当前人格、关系和用户请求自行决定，不能把难度选择交给网页用户。
         支持 gomoku（五子棋）、xiangqi（中国象棋）、tictactoe（井字棋）、
-        turtle_soup（海龟汤）和 pig_dice（贪心骰子）。
+        turtle_soup（海龟汤）、pig_dice（贪心骰子）和 draw_guess（你画我猜）。
         不要因为普通聊天中偶然提到游戏名称就调用本工具。
         当前 QQ 会话已有房间时只返回原房间入口；切换游戏、再来一局和其他局内操作
         全部由用户进入 WebUI 后完成，不能在 QQ 中代替用户执行。
 
         Args:
-            game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、turtle_soup 或 pig_dice。
+            game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、turtle_soup、pig_dice 或 draw_guess。
             difficulty(string): 你决定使用的难度，只能是 easy、normal、hard；贪心骰子中分别表示稳健、均衡和大胆。
             turtle_soup_mode(string): 海龟汤玩法；bot_host 表示 Bot 出题玩家猜，player_host 表示玩家给线索 Bot 猜。非海龟汤时忽略。
             confirm_abandon(boolean): 切换游戏且当前局未结束时，用户是否已明确同意放弃本局。
@@ -306,7 +320,7 @@ class GameCompanionPlugin(Star):
         rooms = self.manager.for_session(event.unified_msg_origin)
         if not rooms:
             yield event.plain_result(
-                "当前会话没有活动游戏房间。直接告诉我想玩五子棋、象棋、井字棋、海龟汤或贪心骰子即可。"
+                "当前会话没有活动游戏房间。直接告诉我想玩五子棋、象棋、井字棋、海龟汤、贪心骰子或你画我猜即可。"
             )
             return
         labels = [
@@ -343,6 +357,7 @@ class GameCompanionPlugin(Star):
             "3. 井字棋：三连即可获胜",
             "4. 海龟汤：通过是非提问还原汤底",
             "5. 贪心骰子：继续掷或收手，先到 50 分获胜",
+            "6. 你画我猜：用户在网页作画，Bot 通过视觉模型猜词",
             "",
             "房间容量",
             f"群聊：{capacity(group_count, self.manager.max_group_rooms, self.group_rooms_enabled)}",
@@ -419,6 +434,23 @@ class GameCompanionPlugin(Star):
                 f"实时状态：玩家已存 {game.human_score} 分，Bot 已存 {game.bot_score} 分，"
                 f"{advantage}；当前轮到{turn}，本回合暂存 {game.turn_total} 分，"
                 f"最近点数={game.last_roll or '无'}，目标 {game.target_score} 分。"
+            )
+            return lines
+
+        if isinstance(game, DrawGuessGame):
+            state = (
+                "已经猜中"
+                if game.solved
+                else "本轮已经结束"
+                if game.finished
+                else "正在看图"
+                if game.processing
+                else "等待玩家继续作画"
+            )
+            recent = "、".join(item["guess"] for item in game.guesses[-3:]) or "暂无"
+            lines.append(
+                f"实时进度：{state}，Bot 已猜 {len(game.guesses)}/{game.max_guesses} 次，"
+                f"最近猜测：{recent}。这是合作玩法，不按双方对抗优劣描述。"
             )
             return lines
 
@@ -764,6 +796,8 @@ class GameCompanionPlugin(Star):
                     )
                 )
             return
+        if event_name in {"drawing_changed", "draw_guess_completed"}:
+            return
         if event_name == "game_finished":
             self._queue_companion_round_event(room, payload)
             if room.game_type == "turtle_soup" and isinstance(
@@ -777,6 +811,14 @@ class GameCompanionPlugin(Star):
                     else "玩家成功解开汤底"
                     if room.game.solved
                     else "玩家放弃，汤底已揭晓"
+                )
+            elif room.game_type == "draw_guess" and isinstance(
+                room.game, DrawGuessGame
+            ):
+                result = (
+                    f"Bot 在第 {len(room.game.guesses)} 次猜中了“{room.game.answer}”"
+                    if room.game.solved
+                    else f"这一轮没能猜中，答案是“{room.game.answer}”"
                 )
             else:
                 result = {
@@ -940,6 +982,98 @@ class GameCompanionPlugin(Star):
             )
             return {"action": action or "chat", "reply": reply}
 
+    async def submit_draw_guess(
+        self, room: GameRoom, *, visitor_token: str, image_data_url: str
+    ) -> dict[str, Any]:
+        """Send one bounded canvas image to a visual provider for a single guess."""
+        safe_image = self._validated_drawing_image(image_data_url)
+        game = await self.manager.begin_draw_guess(room, visitor_token)
+        try:
+            guess = await self._guess_drawing(room, game, safe_image)
+            item = await self.manager.complete_draw_guess(room, visitor_token, guess)
+        except Exception:
+            await self.manager.abort_draw_guess(room)
+            raise
+        return {
+            "guess": item["guess"],
+            "correct": item["correct"],
+            "number": item["number"],
+        }
+
+    async def _guess_drawing(
+        self, room: GameRoom, game: DrawGuessGame, image_data_url: str
+    ) -> str:
+        provider = None
+        if self.draw_guess_vision_provider_id:
+            getter = getattr(self.context, "get_provider_by_id", None)
+            if callable(getter):
+                provider = getter(self.draw_guess_vision_provider_id)
+            if provider is None:
+                raise RuntimeError("你画我猜配置的视觉模型 Provider 不存在")
+        else:
+            provider = self.context.get_using_provider(room.session_id)
+        if provider is None or not callable(getattr(provider, "text_chat", None)):
+            raise RuntimeError("当前会话没有可用的视觉模型")
+        previous = "、".join(item["guess"] for item in game.guesses) or "暂无"
+        prompt = (
+            "请观察这张用户在白色画布上的简笔画，猜一个最可能的中文词语。"
+            "只回答一个答案，不解释，不列举候选，不复述任务。"
+            f"此前已经猜过且不正确的答案：{previous}。不要重复这些答案。"
+        )
+        system_prompt = (
+            "你正在玩你画我猜。隐藏答案绝不会提供给你，必须只根据图片判断。"
+            "输出一个简短中文名词或成语；不要使用斜杠、顿号或逗号列出多个答案。"
+        )
+        try:
+            response = await asyncio.wait_for(
+                provider.text_chat(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    image_urls=[image_data_url],
+                ),
+                timeout=45,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("视觉模型看图超时，请稍后再试") from exc
+        except Exception as exc:
+            raise RuntimeError(
+                "视觉模型无法读取画布；请检查当前模型是否支持图片，或配置专用视觉 Provider"
+            ) from exc
+        raw = str(getattr(response, "completion_text", response) or "").strip()
+        guess = self._clean_draw_guess(raw)
+        if not guess:
+            raise RuntimeError("视觉模型没有给出有效猜测")
+        return guess
+
+    @staticmethod
+    def _clean_draw_guess(value: Any) -> str:
+        text = str(value or "").strip().splitlines()[0] if str(value or "").strip() else ""
+        text = re.sub(r"^(?:我猜(?:是)?|答案(?:是)?|可能是)[:：\s]*", "", text)
+        text = re.split(r"[，,、/；;]", text, maxsplit=1)[0]
+        return text.strip(" \t\r\n。！？!?\"'“”‘’《》")[:30]
+
+    @staticmethod
+    def _validated_drawing_image(value: Any) -> str:
+        image = str(value or "").strip()
+        match = re.fullmatch(
+            r"data:image/(png|webp);base64,([A-Za-z0-9+/]+={0,2})", image
+        )
+        if not match:
+            raise ValueError("画布图片必须是 PNG 或 WebP")
+        try:
+            content = base64.b64decode(match.group(2), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("画布图片编码无效") from None
+        if not 256 <= len(content) <= 384 * 1024:
+            raise ValueError("画布图片大小必须在 256 B 到 384 KB 之间")
+        if match.group(1) == "png" and not content.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("PNG 画布图片签名无效")
+        if match.group(1) == "webp" and not (
+            content.startswith(b"RIFF") and content[8:12] == b"WEBP"
+        ):
+            raise ValueError("WebP 画布图片签名无效")
+        return image
+
     @staticmethod
     def _room_chat_action(
         room: GameRoom, text: str
@@ -955,6 +1089,7 @@ class GameCompanionPlugin(Star):
             ("xiangqi", ("中国象棋", "象棋")),
             ("gomoku", ("五子棋",)),
             ("pig_dice", ("贪心骰子", "小猪骰子", "骰子")),
+            ("draw_guess", ("你画我猜", "画画猜词", "画图猜词")),
         )
         switch_words = (
             "切换",
@@ -1608,6 +1743,11 @@ class GameCompanionPlugin(Star):
                         f"Bot 侧记分 {score.bot_wins} 题，共提问 {room.turtle_soup_stats.questions} 次，"
                         f"使用提示 {room.turtle_soup_stats.hints} 次）"
                     )
+                elif game_type == "draw_guess":
+                    summaries.append(
+                        f"你画我猜 {score.completed} 轮（合作猜中 {score.human_wins} 轮，"
+                        f"未猜中 {score.bot_wins} 轮）"
+                    )
                 else:
                     summaries.append(
                         f"{self._game_label(game_type)} {score.completed} 局（用户胜 {score.human_wins} 局，"
@@ -2021,7 +2161,7 @@ class GameCompanionPlugin(Star):
         active_afterglow = self._safe_float(afterglow.get("expires_at")) > time.time()
         last_game = str(afterglow.get("game_label") or "").strip()
         tone = str(afterglow.get("tone") or "").strip()[:160]
-        games = "五子棋、中国象棋、井字棋、海龟汤或贪心骰子"
+        games = "五子棋、中国象棋、井字棋、海龟汤、贪心骰子或你画我猜"
         details = (
             f"最近和该用户玩的游戏是{last_game}，当前余味是：{tone}。"
             if active_afterglow and last_game and tone
@@ -2155,6 +2295,8 @@ class GameCompanionPlugin(Star):
             instruction += "说明玩家进入玩家席后由 Bot 准备题目。"
         elif room.game_type == "pig_dice":
             instruction += "说明玩家进入玩家席后直接开始，先手由系统随机决定。"
+        elif room.game_type == "draw_guess":
+            instruction += "说明玩家进入玩家席后在网页画布作画，并手动点击让 Bot 猜。"
         else:
             instruction += "说明玩家进入后可选择执棋方。"
         timeout = self.manager.empty_player_timeout
@@ -2398,9 +2540,14 @@ class GameCompanionPlugin(Star):
             "贪心骰子": "pig_dice",
             "贪心骰": "pig_dice",
             "骰子": "pig_dice",
+            "draw_guess": "draw_guess",
+            "draw-guess": "draw_guess",
+            "你画我猜": "draw_guess",
+            "画画猜词": "draw_guess",
+            "画图猜词": "draw_guess",
         }
         if normalized not in aliases:
-            raise ValueError("目前只支持五子棋、中国象棋、井字棋、海龟汤和贪心骰子")
+            raise ValueError("目前只支持五子棋、中国象棋、井字棋、海龟汤、贪心骰子和你画我猜")
         return aliases[normalized]  # type: ignore[return-value]
 
     @staticmethod
@@ -2411,6 +2558,7 @@ class GameCompanionPlugin(Star):
             "tictactoe": "井字棋",
             "turtle_soup": "海龟汤",
             "pig_dice": "贪心骰子",
+            "draw_guess": "你画我猜",
         }[game_type]
 
     @staticmethod

@@ -102,6 +102,43 @@
         </footer>
       </section>
 
+      <section id="drawStage" class="draw-stage" hidden aria-label="你画我猜">
+        <header class="draw-header">
+          <div>
+            <span class="label">你画我猜</span>
+            <h2>你来画，Bot 来猜</h2>
+          </div>
+          <div class="draw-status-readout">
+            <strong id="drawTimer">120 秒</strong>
+            <span id="drawGuessCount">猜测 0 / 5</span>
+          </div>
+        </header>
+        <p id="drawPrompt" class="draw-prompt">进入玩家席后，画出你看到的题目。答案不会显示给观众或 Bot。</p>
+        <div class="draw-toolbar" aria-label="画笔工具">
+          <label class="draw-color" title="画笔颜色">
+            <span class="sr-only">画笔颜色</span>
+            <input id="drawColor" type="color" value="#202522" />
+          </label>
+          <label class="draw-width" title="画笔粗细">
+            <span>粗细</span>
+            <input id="drawWidth" type="range" min="1" max="24" value="5" />
+          </label>
+          <button id="drawUndo" class="secondary-action" type="button" title="撤销上一笔" aria-label="撤销上一笔"><i data-lucide="undo-2"></i></button>
+          <button id="drawClear" class="secondary-action" type="button" title="清空画布" aria-label="清空画布"><i data-lucide="eraser"></i></button>
+        </div>
+        <div class="draw-canvas-wrap">
+          <canvas id="drawCanvas" width="512" height="512" aria-label="作画画布"></canvas>
+          <div id="drawCanvasOverlay" class="draw-canvas-overlay" hidden>
+            <strong id="drawOverlayTitle"></strong>
+            <span id="drawOverlayText"></span>
+          </div>
+        </div>
+        <div id="drawHistory" class="draw-history" aria-live="polite"></div>
+        <footer class="draw-actions">
+          <button id="drawGuessAction" class="primary-action" type="button"><i data-lucide="sparkles"></i><span>让 Bot 猜</span></button>
+        </footer>
+      </section>
+
       <aside class="game-panel">
         <section class="turn-panel">
           <div class="turn-stone" id="turnStone"></div>

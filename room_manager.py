@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
+from .draw_guess import DrawGuessGame
 from .gomoku import BLACK, WHITE, Difficulty, GomokuGame
 from .models import (
     GameRoom,
@@ -20,8 +23,8 @@ from .models import (
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
-from .tictactoe import X as TICTACTOE_X
 from .tictactoe import TicTacToeGame
+from .tictactoe import X as TICTACTOE_X
 from .turtle_soup import (
     SoupContentLevel,
     SoupPuzzle,
@@ -59,6 +62,8 @@ class RoomManager:
         multiplayer_turn_timeout: int = 60,
         swap_request_cooldown: int = 30,
         swap_request_expiry: int = 20,
+        draw_guess_max_guesses: int = 5,
+        draw_guess_duration_seconds: int = 120,
         xiangqi_engine: PikafishService | None = None,
         event_callback: RoomCallback | None = None,
     ) -> None:
@@ -72,6 +77,10 @@ class RoomManager:
         self.multiplayer_turn_timeout = max(0, int(multiplayer_turn_timeout))
         self.swap_request_cooldown = max(0, int(swap_request_cooldown))
         self.swap_request_expiry = max(1, int(swap_request_expiry))
+        self.draw_guess_max_guesses = max(1, min(int(draw_guess_max_guesses), 10))
+        self.draw_guess_duration_seconds = max(
+            10, min(int(draw_guess_duration_seconds), 600)
+        )
         self.xiangqi_engine = xiangqi_engine
         self.event_callback = event_callback
         self.rooms: dict[str, GameRoom] = {}
@@ -584,6 +593,13 @@ class RoomManager:
             elif room.game_type == "pig_dice":
                 room.game = PigDiceGame(difficulty=room.difficulty)
                 side_label = ""
+            elif room.game_type == "draw_guess":
+                room.game = DrawGuessGame(
+                    difficulty=room.difficulty,
+                    max_guesses=self.draw_guess_max_guesses,
+                    duration_seconds=self.draw_guess_duration_seconds,
+                )
+                side_label = ""
             else:
                 room.game = TurtleSoupGame(
                     difficulty=room.difficulty,
@@ -605,6 +621,12 @@ class RoomManager:
                 first = "玩家" if room.game.turn == "human" else "Bot"
                 room.add_message(
                     "system", f"新一局贪心骰子开始，由{first}先掷，目标 50 分。"
+                )
+            elif isinstance(room.game, DrawGuessGame):
+                room.add_message(
+                    "system",
+                    f"你画我猜开始。玩家有 {room.game.duration_seconds} 秒作画，"
+                    f"可让 Bot 猜 {room.game.max_guesses} 次。",
                 )
             else:
                 room.add_message(
@@ -640,7 +662,7 @@ class RoomManager:
                 raise PermissionError("当前浏览器不在玩家席")
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有正在进行的对局")
-            if isinstance(room.game, (TurtleSoupGame, PigDiceGame)):
+            if isinstance(room.game, (TurtleSoupGame, PigDiceGame, DrawGuessGame)):
                 raise ValueError("当前游戏不使用棋盘落子接口")
             if isinstance(room.game, XiangqiGame):
                 await room.game.place_human(
@@ -693,6 +715,80 @@ class RoomManager:
             await self._finish_game(room)
         elif bot_turn:
             await self._bot_turn(room)
+
+    async def update_drawing(
+        self, room: GameRoom, visitor_token: str, strokes: Any
+    ) -> None:
+        """Replace the authoritative drawing with one bounded stroke document."""
+        normalized = self._normalize_strokes(strokes)
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if visitor.token != room.player_token:
+                raise PermissionError("只有玩家席可以操作画布")
+            if room.status != "active" or not isinstance(room.game, DrawGuessGame):
+                raise ValueError("当前没有正在进行的你画我猜")
+            if room.game.processing:
+                raise ValueError("Bot 正在看图，暂时不能修改画布")
+            room.game.replace_strokes(normalized)
+            room.touch()
+        await self._emit("drawing_changed", room, {"revision": room.game.revision})
+
+    async def begin_draw_guess(
+        self, room: GameRoom, visitor_token: str
+    ) -> DrawGuessGame:
+        """Reserve one visual guess without exposing the hidden target."""
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if visitor.token != room.player_token:
+                raise PermissionError("只有玩家席可以让 Bot 猜图")
+            if room.status != "active" or not isinstance(room.game, DrawGuessGame):
+                raise ValueError("当前没有正在进行的你画我猜")
+            game = room.game
+            if game.processing:
+                raise ValueError("Bot 已经在看这幅画了")
+            if game.finished:
+                raise ValueError("本局已经结束")
+            if not game.strokes:
+                raise ValueError("请先画几笔，再让 Bot 猜")
+            if game.is_expired():
+                game.timeout()
+                raise ValueError("作画时间已经结束")
+            game.processing = True
+            room.touch()
+            return game
+
+    async def abort_draw_guess(self, room: GameRoom) -> None:
+        async with room.lock:
+            if isinstance(room.game, DrawGuessGame):
+                room.game.processing = False
+
+    async def complete_draw_guess(
+        self, room: GameRoom, visitor_token: str, guess: str
+    ) -> dict[str, Any]:
+        """Record one Bot guess and finish the cooperative round when appropriate."""
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if visitor.token != room.player_token:
+                raise PermissionError("玩家席已经发生变化")
+            if room.status != "active" or not isinstance(room.game, DrawGuessGame):
+                raise ValueError("当前你画我猜已经结束")
+            game = room.game
+            if not game.processing:
+                raise ValueError("当前没有待完成的 Bot 猜测")
+            correct = game.matches(guess)
+            item = game.record_guess(guess, correct=correct)
+            game.processing = False
+            room.touch()
+            room.add_message(
+                "bot",
+                f"我猜是“{item['guess']}”。" + ("猜中了。" if correct else "好像不对。"),
+                message_type="game",
+            )
+            finished = game.finished
+        await self._emit("draw_guess_completed", room, dict(item))
+        if finished:
+            await self._finish_game(room)
+        return dict(item)
 
     async def request_rematch(
         self,
@@ -795,6 +891,13 @@ class RoomManager:
             elif isinstance(room.game, PigDiceGame):
                 room.game = PigDiceGame(difficulty=difficulty)
                 side_label = ""
+            elif isinstance(room.game, DrawGuessGame):
+                room.game = DrawGuessGame(
+                    difficulty=difficulty,
+                    max_guesses=self.draw_guess_max_guesses,
+                    duration_seconds=self.draw_guess_duration_seconds,
+                )
+                side_label = ""
             else:
                 raise ValueError("当前游戏状态无法重新开始")
             room.status = "active"
@@ -809,6 +912,11 @@ class RoomManager:
                 first = "玩家" if room.game.turn == "human" else "Bot"
                 room.add_message(
                     "system", f"新一局贪心骰子开始，由{first}先掷，目标 50 分。"
+                )
+            elif isinstance(room.game, DrawGuessGame):
+                room.add_message(
+                    "system",
+                    f"新一轮你画我猜开始，可让 Bot 猜 {room.game.max_guesses} 次。",
                 )
             else:
                 room.add_message(
@@ -828,7 +936,7 @@ class RoomManager:
         async with room.lock:
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有可以悔棋的对局")
-            if isinstance(room.game, (TurtleSoupGame, PigDiceGame)):
+            if isinstance(room.game, (TurtleSoupGame, PigDiceGame, DrawGuessGame)):
                 raise ValueError("当前游戏不支持悔棋")
             if isinstance(room.game, XiangqiGame):
                 removed = await room.game.undo_round(self._require_xiangqi_engine())
@@ -853,6 +961,8 @@ class RoomManager:
                 room.game.winner = room.game.bot_mark
             elif isinstance(room.game, PigDiceGame):
                 room.game.resign_human()
+            elif isinstance(room.game, DrawGuessGame):
+                room.game.timeout()
             else:
                 raise ValueError("当前游戏不能认输")
             room.touch()
@@ -924,6 +1034,8 @@ class RoomManager:
         async with room.lock:
             if room.status != "active":
                 raise ValueError("当前对局不能暂停")
+            if isinstance(room.game, DrawGuessGame):
+                room.game.pause()
             room.status = "paused"
             self._reset_turn_deadline(room)
             room.touch()
@@ -934,12 +1046,14 @@ class RoomManager:
         async with room.lock:
             if room.status != "paused" or room.game is None:
                 raise ValueError("当前没有已暂停的对局")
+            if isinstance(room.game, DrawGuessGame):
+                room.game.resume()
             room.status = "active"
             room.touch()
             self._reset_turn_deadline(room)
             room.add_message("system", "对局继续。")
             bot_turn = not isinstance(
-                room.game, TurtleSoupGame
+                room.game, (TurtleSoupGame, DrawGuessGame)
             ) and self._game_is_bot_turn(room.game)
         if bot_turn:
             await self._bot_turn(room)
@@ -958,6 +1072,7 @@ class RoomManager:
             "tictactoe",
             "turtle_soup",
             "pig_dice",
+            "draw_guess",
         }:
             raise ValueError("不支持的游戏类型")
         if game_type == "xiangqi":
@@ -1356,6 +1471,16 @@ class RoomManager:
         expired: list[tuple[str, str]] = []
         for room in list(self.rooms.values()):
             await self._tick_multiplayer_room(room, current)
+            if (
+                room.status == "active"
+                and isinstance(room.game, DrawGuessGame)
+                and not room.game.processing
+                and room.game.is_expired(current)
+            ):
+                async with room.lock:
+                    room.game.timeout()
+                    room.touch()
+                await self._finish_game(room)
             player = room.player
             if room.status == "finished" and player is not None:
                 seated_visitors = (
@@ -1416,7 +1541,7 @@ class RoomManager:
             if room.status != "active" or room.game is None or room.game.finished:
                 return
             game = room.game
-            if isinstance(game, TurtleSoupGame):
+            if isinstance(game, (TurtleSoupGame, DrawGuessGame)):
                 return
             if isinstance(game, XiangqiGame):
                 try:
@@ -1483,6 +1608,13 @@ class RoomManager:
                 else:
                     room.bot_wins += 1
                     result = "bot_win"
+            elif isinstance(room.game, DrawGuessGame):
+                if room.game.solved:
+                    room.human_wins += 1
+                    result = "cooperative_success"
+                else:
+                    room.bot_wins += 1
+                    result = "cooperative_unsolved"
             elif getattr(room.game, "draw", False):
                 room.draws += 1
                 result = "draw"
@@ -1708,6 +1840,50 @@ class RoomManager:
         return visitor
 
     @staticmethod
+    def _normalize_strokes(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            raise ValueError("画布笔迹格式无效")
+        if len(value) > 400:
+            raise ValueError("画布笔画过多，请先清理部分内容")
+        normalized: list[dict[str, Any]] = []
+        total_points = 0
+        for raw in value:
+            if not isinstance(raw, dict):
+                raise ValueError("画布笔迹格式无效")
+            color = str(raw.get("color") or "#202522").lower()
+            if not re.fullmatch(r"#[0-9a-f]{6}", color):
+                raise ValueError("画笔颜色无效")
+            try:
+                width = float(raw.get("width") or 4)
+            except (TypeError, ValueError):
+                raise ValueError("画笔粗细无效") from None
+            if not math.isfinite(width) or not 1 <= width <= 32:
+                raise ValueError("画笔粗细超出范围")
+            raw_points = raw.get("points")
+            if not isinstance(raw_points, list) or not raw_points:
+                raise ValueError("笔画没有有效坐标")
+            points: list[list[float]] = []
+            for point in raw_points:
+                if not isinstance(point, list) or len(point) != 2:
+                    raise ValueError("笔画坐标格式无效")
+                try:
+                    x, y = float(point[0]), float(point[1])
+                except (TypeError, ValueError):
+                    raise ValueError("笔画坐标格式无效") from None
+                if not math.isfinite(x) or not math.isfinite(y) or not (
+                    0 <= x <= 1 and 0 <= y <= 1
+                ):
+                    raise ValueError("笔画坐标超出画布")
+                points.append([round(x, 5), round(y, 5)])
+            total_points += len(points)
+            if total_points > 12000:
+                raise ValueError("画布坐标过多，请先清理部分内容")
+            normalized.append(
+                {"color": color, "width": round(width, 2), "points": points}
+            )
+        return normalized
+
+    @staticmethod
     def _difficulty_label(difficulty: Difficulty) -> str:
         return {"easy": "简单", "normal": "普通", "hard": "困难"}[difficulty]
 
@@ -1719,7 +1895,7 @@ class RoomManager:
     def _is_bot_turn(self, room: GameRoom) -> bool:
         return bool(
             room.game
-            and not isinstance(room.game, TurtleSoupGame)
+            and not isinstance(room.game, (TurtleSoupGame, DrawGuessGame))
             and self._game_is_bot_turn(room.game)
         )
 
@@ -1737,12 +1913,21 @@ class RoomManager:
 
     @staticmethod
     def _game_human_won(
-        game: (GomokuGame | XiangqiGame | TicTacToeGame | TurtleSoupGame | PigDiceGame),
+        game: (
+            GomokuGame
+            | XiangqiGame
+            | TicTacToeGame
+            | TurtleSoupGame
+            | PigDiceGame
+            | DrawGuessGame
+        ),
     ) -> bool:
         if isinstance(game, PigDiceGame):
             return game.winner == "human"
         if isinstance(game, TurtleSoupGame):
             return game.winner == "human"
+        if isinstance(game, DrawGuessGame):
+            return game.solved
         if isinstance(game, XiangqiGame):
             return game.winner == game.human_side
         if isinstance(game, GomokuGame):
@@ -1757,6 +1942,7 @@ class RoomManager:
             "tictactoe": "井字棋",
             "turtle_soup": "海龟汤",
             "pig_dice": "贪心骰子",
+            "draw_guess": "你画我猜",
         }[game_type]
 
     @staticmethod

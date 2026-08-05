@@ -34,6 +34,10 @@ def test_config_defaults_match_product_contract() -> None:
     assert integration["enable_proactive_invites"]["default"] is False
     assert integration["proactive_invite_probability_percent"]["default"] == 18
     assert integration["proactive_invite_cooldown_hours"]["default"] == 24
+    draw_guess = schema["draw_guess"]["items"]
+    assert draw_guess["duration_seconds"]["default"] == 120
+    assert draw_guess["max_guesses"]["default"] == 5
+    assert draw_guess["vision_provider_id"]["_special"] == "select_provider"
 
 
 def test_metadata_registers_default_management_page() -> None:
@@ -44,7 +48,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.1.8"
+    assert metadata["version"] == "0.1.9"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -125,7 +129,7 @@ def test_webui_uses_one_room_chat_composer_for_turtle_soup_and_controls() -> Non
     assert 'id="chatInput"' in page
     assert 'id="soupSolution"' in page
     assert 'request("POST", "chat"' in script
-    assert '["turtle_soup", "pig_dice"].includes(room.game_type)' in script
+    assert '["turtle_soup", "pig_dice", "draw_guess"].includes(room.game_type)' in script
     assert ".side-choice[hidden] { display: none; }" in styles
     assert 'chatInput.value = "";' in script
     assert "function submitChat" in script
@@ -162,6 +166,21 @@ def test_pig_dice_webui_and_qq_menu_are_registered() -> None:
     assert 'id="diceStage"' in page
     assert 'request("POST", "dice/action"' in script
     assert '["pig_dice", "贪心骰子"]' in manager
+
+
+def test_draw_guess_webui_and_visual_endpoint_are_registered() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    manager = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+
+    assert '"你画我猜": "draw_guess"' in source
+    assert 'id="drawCanvas"' in page
+    assert 'request("POST", "draw/strokes"' in script
+    assert 'request("POST", "draw/guess"' in script
+    assert '"/api/room/{access_token}/draw/guess"' in server
+    assert '["draw_guess", "你画我猜"]' in manager
 
 
 def test_fast_game_replies_do_not_pollute_normal_conversation_history() -> None:

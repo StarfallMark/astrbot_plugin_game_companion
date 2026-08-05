@@ -112,6 +112,7 @@
         ["tictactoe", "井字棋"],
         ["turtle_soup", "海龟汤"],
         ["pig_dice", "贪心骰子"],
+        ["draw_guess", "你画我猜"],
       ].forEach(([value, label]) => {
         const option = document.createElement("option");
         option.value = value;
@@ -234,6 +235,12 @@
           ? `玩家 ${progress.human_score} · Bot ${progress.bot_score} · 本回合 ${progress.turn_total}`
           : "等待开局";
         state.append(createText("small", `风格：${style} · ${score}`));
+      } else if (room.game_type === "draw_guess") {
+        const progress = room.draw_guess_progress;
+        const detail = progress
+          ? `${progress.processing ? "Bot 看图中" : progress.solved ? "已猜中" : progress.timed_out ? "已超时" : `剩余 ${progress.remaining_seconds} 秒`} · 猜测 ${progress.guess_count}/${progress.max_guesses}`
+          : "等待开局";
+        state.append(createText("small", `难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${detail}`));
       } else {
         state.append(createText("small", `棋力：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"}`));
       }

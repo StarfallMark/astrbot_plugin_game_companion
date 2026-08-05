@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .draw_guess import DrawGuessGame
 from .gomoku import Difficulty, GomokuGame
 from .pig_dice import PigDiceGame
 from .tictactoe import TicTacToeGame
@@ -13,7 +14,9 @@ from .turtle_soup import TurtleSoupGame
 from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
-GameType = Literal["gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice"]
+GameType = Literal[
+    "gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice", "draw_guess"
+]
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
 ]
@@ -174,7 +177,13 @@ class GameRoom:
     round_participant_qqs: set[str] = field(default_factory=set)
     multiplayer: MultiplayerState = field(default_factory=MultiplayerState)
     game: (
-        GomokuGame | XiangqiGame | TicTacToeGame | TurtleSoupGame | PigDiceGame | None
+        GomokuGame
+        | XiangqiGame
+        | TicTacToeGame
+        | TurtleSoupGame
+        | PigDiceGame
+        | DrawGuessGame
+        | None
     ) = None
     scores: dict[GameType, GameScore] = field(
         default_factory=lambda: {
@@ -183,6 +192,7 @@ class GameRoom:
             "tictactoe": GameScore(),
             "turtle_soup": GameScore(),
             "pig_dice": GameScore(),
+            "draw_guess": GameScore(),
         }
     )
     turtle_soup_stats: TurtleSoupStats = field(default_factory=TurtleSoupStats)
@@ -419,7 +429,18 @@ class GameRoom:
                     self.visitors.values(), key=lambda value: value.number
                 )
             ],
-            "game": self.game.snapshot() if self.game else None,
+            "game": (
+                self.game.snapshot(
+                    reveal_answer=bool(
+                        visitor and visitor.token in player_tokens
+                    )
+                    or self.status in {"finished", "rematch_pending"}
+                )
+                if isinstance(self.game, DrawGuessGame)
+                else self.game.snapshot()
+                if self.game
+                else None
+            ),
             "score": {
                 "human": self.human_wins,
                 "bot": self.bot_wins,
@@ -472,6 +493,7 @@ class GameRoom:
             },
             "turtle_soup_progress": self._turtle_soup_progress(),
             "pig_dice_progress": self._pig_dice_progress(),
+            "draw_guess_progress": self._draw_guess_progress(),
             "player_number": player.number if player else None,
             "player_numbers": [
                 self.visitors[token].number
@@ -555,4 +577,16 @@ class GameRoom:
             "turn_total": self.game.turn_total,
             "target_score": self.game.target_score,
             "risk_style": self.game.bot_risk_style,
+        }
+
+    def _draw_guess_progress(self) -> dict[str, object] | None:
+        if not isinstance(self.game, DrawGuessGame):
+            return None
+        return {
+            "guess_count": len(self.game.guesses),
+            "max_guesses": self.game.max_guesses,
+            "processing": self.game.processing,
+            "solved": self.game.solved,
+            "timed_out": self.game.timed_out,
+            "remaining_seconds": self.game.remaining_seconds,
         }

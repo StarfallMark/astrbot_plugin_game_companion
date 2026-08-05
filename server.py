@@ -80,7 +80,10 @@ class GameRoomServer:
     def _build_app(self) -> web.Application:
         """Build the room application for the real server and isolated tests."""
         app = web.Application(
-            client_max_size=64 * 1024,
+            # A 384 KiB image expands to slightly over 512 KiB once base64 and
+            # the JSON envelope are included. Raw image validation remains
+            # capped in the plugin before it reaches the visual provider.
+            client_max_size=768 * 1024,
             middlewares=[self._error_middleware],
         )
         app.router.add_get("/", self._serve_index)
@@ -93,6 +96,12 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/start", self._start_game)
         app.router.add_post("/api/room/{access_token}/move", self._move)
         app.router.add_post("/api/room/{access_token}/dice/action", self._dice_action)
+        app.router.add_post(
+            "/api/room/{access_token}/draw/strokes", self._draw_strokes
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/draw/guess", self._draw_guess
+        )
         app.router.add_post(
             "/api/room/{access_token}/soup/question", self._soup_question
         )
@@ -239,6 +248,30 @@ class GameRoomServer:
             room, visitor_token, str(payload.get("action") or "")
         )
         return self._response({"room": room.public_snapshot(visitor_token)})
+
+    async def _draw_strokes(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        await self.manager.update_drawing(
+            room, visitor_token, payload.get("strokes")
+        )
+        return self._response({"room": room.public_snapshot(visitor_token)})
+
+    async def _draw_guess(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        result = await self.plugin.submit_draw_guess(
+            room,
+            visitor_token=visitor_token,
+            image_data_url=str(payload.get("image_data_url") or ""),
+        )
+        return self._response(
+            {**result, "room": room.public_snapshot(visitor_token)}
+        )
 
     async def _soup_question(self, request: web.Request) -> web.Response:
         self._require_origin(request)
