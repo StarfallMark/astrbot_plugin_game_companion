@@ -14,6 +14,17 @@ WHITE = 2
 Difficulty = Literal["easy", "normal", "hard"]
 
 
+@dataclass(frozen=True, slots=True)
+class GomokuMoveThreat:
+    """A threat created by one concrete move, not a whole-board estimate."""
+
+    kind: Literal["win", "multiple", "single", ""]
+    row: int
+    column: int
+    color: int
+    winning_points: tuple[tuple[int, int], ...] = ()
+
+
 @dataclass(slots=True)
 class GomokuGame:
     """A freestyle Gomoku game with a bounded heuristic search opponent."""
@@ -172,6 +183,43 @@ class GomokuGame:
         if best >= 3:
             return "three"
         return ""
+
+    def move_threat(self, row: int, column: int, color: int) -> GomokuMoveThreat:
+        """Describe immediate winning points created through the given move."""
+        if (
+            color not in {BLACK, WHITE}
+            or not (0 <= row < BOARD_SIZE and 0 <= column < BOARD_SIZE)
+            or self.board[row][column] != color
+        ):
+            return GomokuMoveThreat("", row, column, color)
+        if self._is_win(row, column, color):
+            return GomokuMoveThreat("win", row, column, color)
+
+        winning_points: set[tuple[int, int]] = set()
+        for delta_row, delta_column in ((1, 0), (0, 1), (1, 1), (1, -1)):
+            for offset in range(-4, 1):
+                cells = [
+                    (
+                        row + (offset + step) * delta_row,
+                        column + (offset + step) * delta_column,
+                    )
+                    for step in range(5)
+                ]
+                if not all(
+                    0 <= scan_row < BOARD_SIZE
+                    and 0 <= scan_column < BOARD_SIZE
+                    for scan_row, scan_column in cells
+                ):
+                    continue
+                values = [self.board[scan_row][scan_column] for scan_row, scan_column in cells]
+                if values.count(color) == 4 and values.count(EMPTY) == 1:
+                    winning_points.add(cells[values.index(EMPTY)])
+
+        ordered_points = tuple(sorted(winning_points))
+        kind: Literal["multiple", "single", ""] = (
+            "multiple" if len(ordered_points) >= 2 else "single" if ordered_points else ""
+        )
+        return GomokuMoveThreat(kind, row, column, color, ordered_points)
 
     def snapshot(self) -> dict[str, object]:
         """Return the browser-safe game state."""

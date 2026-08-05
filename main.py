@@ -20,6 +20,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api.web import request
 
 from .draw_guess import DrawGuessGame
+from .gomoku import BLACK as GOMOKU_BLACK
 from .gomoku import Difficulty, GomokuGame
 from .models import GameRoom, GameType, TurtleSoupMode, Visitor
 from .pig_dice import PigDiceGame
@@ -57,7 +58,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.1.10"
+PLUGIN_VERSION = "0.2.0"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
@@ -750,25 +751,23 @@ class GameCompanionPlugin(Star):
             return
         if event_name == "board_changed" and room.game is not None:
             if room.game_type == "gomoku":
-                side = (
-                    room.game.human_color
-                    if payload.get("actor") == "human"
-                    else room.game.bot_color
-                )
+                tactical_prompt = self._gomoku_commentary_prompt(room, payload)
             elif room.game_type == "tictactoe":
                 side = (
                     room.game.human_mark
                     if payload.get("actor") == "human"
                     else room.game.bot_mark
                 )
+                tactical = room.game.tactical_state(side)
+                tactical_prompt = {
+                    "fork": "井字棋盘面刚出现了双重威胁",
+                }.get(tactical)
             else:
                 side = None
-            tactical = room.game.tactical_state(side)
-            tactical_prompt = {
-                "four": "棋盘刚出现明显的四子威胁",
-                "major_capture": "棋盘上刚发生了一次重要吃子",
-                "fork": "井字棋盘面刚出现了双重威胁",
-            }.get(tactical)
+                tactical = room.game.tactical_state(side)
+                tactical_prompt = {
+                    "major_capture": "棋盘上刚发生了一次重要吃子",
+                }.get(tactical)
             if tactical_prompt and (
                 time.time() - room.last_commentary_at >= self.commentary_cooldown
             ):
@@ -776,7 +775,7 @@ class GameCompanionPlugin(Star):
                 self._spawn(
                     self._comment(
                         room,
-                        f"{tactical_prompt}，请结合当前人格简短自然地回应。",
+                        tactical_prompt,
                     )
                 )
             return
@@ -1270,7 +1269,7 @@ class GameCompanionPlugin(Star):
         is_player: bool,
         is_current_player: bool,
     ) -> str:
-        persona = await self._persona_prompt()
+        persona = await self._persona_prompt(room)
         memory = await self._memory_context_for_visitor(room, visitor, text)
         scene = self._companion_scene_for_visitor(room, visitor)
         identity = (
@@ -1426,7 +1425,7 @@ class GameCompanionPlugin(Star):
         if game.mode != "bot_host":
             return
         recent = list(room.turtle_soup_recent_signatures)
-        persona = await self._persona_prompt()
+        persona = await self._persona_prompt(room)
         last_error = ""
         for attempt in range(1, 4):
             try:
@@ -1617,7 +1616,7 @@ class GameCompanionPlugin(Star):
             system_prompt, prompt = reverse_turn_prompt(
                 player_text=player_text,
                 public_history=reverse_public_history(game.entries),
-                persona=await self._persona_prompt(),
+                persona=await self._persona_prompt(room),
             )
             raw = await self._call_room_model(
                 room, system_prompt=system_prompt, prompt=prompt, timeout=30
@@ -1688,7 +1687,7 @@ class GameCompanionPlugin(Star):
         provider = self.context.get_using_provider(room.session_id)
         if provider is None or not callable(getattr(provider, "text_chat", None)):
             return ""
-        persona = await self._persona_prompt()
+        persona = await self._persona_prompt(room)
         memory = await self._memory_context(room, prompt)
         companion_scene = self._companion_scene_prompt(room)
         system_prompt = (
@@ -1706,22 +1705,138 @@ class GameCompanionPlugin(Star):
             return ""
         return str(getattr(response, "completion_text", "") or "").strip()[:500]
 
-    async def _persona_prompt(self) -> str:
+    @staticmethod
+    def _persona_text(persona: object) -> str:
+        if isinstance(persona, dict):
+            return str(persona.get("prompt") or persona.get("system_prompt") or "")
+        return str(
+            getattr(persona, "prompt", "")
+            or getattr(persona, "system_prompt", "")
+        )
+
+    @staticmethod
+    async def _resolve_maybe_awaitable(value: object, *, timeout: float = 3) -> object:
+        if inspect.isawaitable(value):
+            return await asyncio.wait_for(value, timeout=timeout)
+        return value
+
+    async def _persona_prompt(self, room: GameRoom) -> str:
         manager = getattr(self.context, "persona_manager", None)
-        getter = getattr(manager, "get_default_persona_v3", None) if manager else None
+        if manager is None:
+            return ""
+
+        conversation_persona_id: str | None = None
+        try:
+            conversation_manager = getattr(self.context, "conversation_manager", None)
+            current_getter = getattr(
+                conversation_manager, "get_curr_conversation_id", None
+            )
+            conversation_getter = getattr(conversation_manager, "get_conversation", None)
+            if callable(current_getter) and callable(conversation_getter):
+                conversation_id = await self._resolve_maybe_awaitable(
+                    current_getter(room.session_id)
+                )
+                if conversation_id:
+                    conversation = await self._resolve_maybe_awaitable(
+                        conversation_getter(room.session_id, conversation_id)
+                    )
+                    if isinstance(conversation, dict):
+                        raw_persona_id = conversation.get("persona_id")
+                    else:
+                        raw_persona_id = getattr(conversation, "persona_id", None)
+                    if raw_persona_id is not None:
+                        conversation_persona_id = str(raw_persona_id)
+        except Exception as exc:
+            logger.debug("[GameCompanion] 读取当前会话人格选择失败: %s", exc)
+
+        resolver = getattr(manager, "resolve_selected_persona", None)
+        if callable(resolver):
+            provider_settings: dict[str, Any] | None = None
+            try:
+                config_manager = getattr(manager, "acm", None) or getattr(
+                    self.context, "astrbot_config_mgr", None
+                )
+                config_getter = getattr(config_manager, "get_conf", None)
+                if callable(config_getter):
+                    config = await self._resolve_maybe_awaitable(
+                        config_getter(room.session_id)
+                    )
+                    if callable(getattr(config, "get", None)):
+                        settings = config.get("provider_settings", {})
+                        if isinstance(settings, dict):
+                            provider_settings = settings
+                resolved = await self._resolve_maybe_awaitable(
+                    resolver(
+                        umo=room.session_id,
+                        conversation_persona_id=conversation_persona_id,
+                        platform_name=room.session_id.split(":", 1)[0],
+                        provider_settings=provider_settings,
+                    )
+                )
+                persona = resolved[1] if isinstance(resolved, (tuple, list)) else resolved
+                return self._persona_text(persona)
+            except Exception as exc:
+                logger.debug("[GameCompanion] 按会话解析人格失败，尝试兼容回退: %s", exc)
+
+        getter = getattr(manager, "get_default_persona_v3", None)
         if not callable(getter):
             return ""
         try:
-            persona = getter()
-            if inspect.isawaitable(persona):
-                persona = await asyncio.wait_for(persona, timeout=3)
-            if isinstance(persona, dict):
-                return str(persona.get("prompt") or persona.get("system_prompt") or "")
-            return str(
-                getattr(persona, "prompt", "") or getattr(persona, "system_prompt", "")
-            )
-        except Exception:
+            try:
+                value = getter(room.session_id)
+            except TypeError:
+                value = getter()
+            persona = await self._resolve_maybe_awaitable(value)
+            return self._persona_text(persona)
+        except Exception as exc:
+            logger.debug("[GameCompanion] 读取默认人格失败: %s", exc)
             return ""
+
+    @staticmethod
+    def _gomoku_commentary_prompt(
+        room: GameRoom, payload: dict[str, Any]
+    ) -> str:
+        game = room.game
+        if not isinstance(game, GomokuGame):
+            return ""
+        try:
+            row = int(payload["row"])
+            column = int(payload["column"])
+            color = int(payload["color"])
+        except (KeyError, TypeError, ValueError):
+            return ""
+        threat = game.move_threat(row, column, color)
+        if threat.kind not in {"multiple", "single"}:
+            return ""
+
+        actor_is_human = payload.get("actor") == "human"
+        actor = "玩家" if actor_is_human else "Bot"
+        opponent = "Bot" if actor_is_human else "玩家"
+        color_label = "黑" if color == GOMOKU_BLACK else "白"
+        opponent_color = game.bot_color if actor_is_human else game.human_color
+        opponent_color_label = "黑" if opponent_color == GOMOKU_BLACK else "白"
+        human_stones = sum(
+            cell == game.human_color for board_row in game.board for cell in board_row
+        )
+        bot_stones = sum(
+            cell == game.bot_color for board_row in game.board for cell in board_row
+        )
+        turn = "本局已经结束" if game.finished else (
+            "当前轮到玩家" if game.turn == game.human_color else "当前轮到 Bot"
+        )
+        consequence = (
+            f"刚才这步留下了 {len(threat.winning_points)} 个下一手即可连成五子的空位，"
+            f"{opponent}下一手无法全部封住。"
+            if threat.kind == "multiple"
+            else f"刚才这步留下了 1 个下一手即可连成五子的空位，{opponent}下一手仍可封住。"
+        )
+        return (
+            f"五子棋刚发生了一个值得回应的节点。触发者是{actor}，执{color_label}；"
+            f"对手是{opponent}，执{opponent_color_label}；最后落子在第 {row + 1} 行第 {column + 1} 列。"
+            f"当前玩家有 {human_stones} 颗棋子，Bot 有 {bot_stones} 颗棋子，{turn}。"
+            f"{consequence}只围绕这一步和当前情绪，用当前人格简短自然回应；"
+            "避免使用专业棋型名称，不要虚构其他落子或胜负。"
+        )
 
     async def _memory_context(self, room: GameRoom, query: str) -> str:
         if (

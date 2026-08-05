@@ -51,7 +51,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.1.10"
+    assert metadata["version"] == "0.2.0"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:

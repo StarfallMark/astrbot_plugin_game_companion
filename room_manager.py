@@ -683,6 +683,7 @@ class RoomManager:
         to_column: int = -1,
     ) -> None:
         """Apply one browser move, then calculate the Bot response off-loop."""
+        board_event: dict[str, object] = {"actor": "human"}
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             if visitor.token != room.player_token:
@@ -701,13 +702,23 @@ class RoomManager:
                 )
             elif isinstance(room.game, GomokuGame):
                 room.game.place(int(row), int(column), room.game.human_color)
+                board_event.update(
+                    row=int(row),
+                    column=int(column),
+                    color=room.game.human_color,
+                )
             elif isinstance(room.game, TicTacToeGame):
                 room.game.place(int(row), int(column), room.game.human_mark)
+                board_event.update(
+                    row=int(row),
+                    column=int(column),
+                    color=room.game.human_mark,
+                )
             else:
                 raise ValueError("当前游戏不支持棋盘落子")
             room.touch()
             finished = room.game.finished
-        await self._emit("board_changed", room, {"actor": "human"})
+        await self._emit("board_changed", room, board_event)
         if finished:
             await self._finish_game(room)
             return
@@ -1564,6 +1575,7 @@ class RoomManager:
         if isinstance(room.game, PigDiceGame):
             await self._pig_dice_bot_turn(room)
             return
+        board_event: dict[str, object] = {"actor": "bot"}
         async with room.lock:
             if room.status != "active" or room.game is None or room.game.finished:
                 return
@@ -1583,11 +1595,15 @@ class RoomManager:
             elif isinstance(game, GomokuGame):
                 move = await asyncio.to_thread(game.choose_bot_move)
                 game.place(move[0], move[1], game.bot_color)
+                board_event.update(
+                    row=move[0], column=move[1], color=game.bot_color
+                )
             else:
                 move = game.choose_bot_move()
                 game.place(move[0], move[1], game.bot_mark)
+                board_event.update(row=move[0], column=move[1], color=game.bot_mark)
             finished = game.finished
-        await self._emit("board_changed", room, {"actor": "bot"})
+        await self._emit("board_changed", room, board_event)
         if finished:
             await self._finish_game(room)
 
