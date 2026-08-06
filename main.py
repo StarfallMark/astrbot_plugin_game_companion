@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
@@ -58,8 +59,16 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.2.1"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
+
+
+@dataclass(slots=True)
+class _RecentPrivateGameResult:
+    room_id: str
+    user_qq: str
+    summary: str
+    expires_at: float = 0.0
 
 
 @register(
@@ -117,6 +126,15 @@ class GameCompanionPlugin(Star):
         self.record_shared_experience = self._cfg_bool(
             "memory.record_shared_experience", True
         )
+        self.private_qq_game_context_enabled = self._cfg_bool(
+            "context.enable_private_qq_game_context", True
+        )
+        self.recent_game_result_ttl_seconds = self._cfg_int(
+            "context.recent_game_result_ttl_minutes",
+            30,
+            minimum=0,
+            maximum=24 * 60,
+        ) * 60
         self.companion_afterglow_enabled = self._cfg_bool(
             "companion_integration.enable_emotional_afterglow", False
         )
@@ -211,6 +229,7 @@ class GameCompanionPlugin(Star):
         self._next_tunnel_retry_at = 0.0
         self._background_tasks: set[asyncio.Task] = set()
         self._companion_round_event_tasks: dict[str, asyncio.Task] = {}
+        self._recent_private_game_results: dict[str, _RecentPrivateGameResult] = {}
         self._companion_invite_api: Any | None = None
         self._next_companion_registration_at = 0.0
         self._register_page_api()
@@ -444,8 +463,141 @@ class GameCompanionPlugin(Star):
     async def inject_game_context(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
-        """Keep QQ conversation context isolated from every active WebUI room."""
-        _ = event, req
+        """Inject read-only facts for the matching private single-player session."""
+        if not getattr(self, "private_qq_game_context_enabled", False):
+            return
+        sender_getter = getattr(event, "get_sender_id", None)
+        sender_qq = str(sender_getter() or "").strip() if callable(sender_getter) else ""
+        if not sender_qq:
+            return
+
+        session_id = str(event.unified_msg_origin)
+        lines: list[str] = []
+        for room in self.manager.for_session(session_id):
+            if self._private_context_user(room) != sender_qq:
+                continue
+            lines.append(self._private_qq_room_state(room))
+
+        recent_results = getattr(self, "_recent_private_game_results", {})
+        recent = recent_results.get(session_id)
+        if recent is not None and recent.user_qq == sender_qq:
+            if recent.expires_at and recent.expires_at <= time.time():
+                recent_results.pop(session_id, None)
+            else:
+                lines.append(recent.summary)
+        if not lines:
+            return
+
+        context_lines = [
+            "<game_companion_private_context>",
+            "以下是游戏插件为当前私聊用户提供的临时只读事实。仅在用户谈及当前或刚结束的游戏时使用；"
+            "无关话题不要主动提起。不得据此声称已在 QQ 中落子、投降、悔棋、切换游戏或改变房间状态，"
+            "所有游戏操作仍只能在 WebUI 完成。",
+            *lines,
+            "这里不包含 WebUI 对话记录，也不得猜测未列出的棋局细节或海龟汤隐藏内容。",
+            "</game_companion_private_context>",
+        ]
+        req.system_prompt = (
+            str(req.system_prompt or "") + "\n\n" + "\n".join(context_lines)
+        ).strip()
+
+    @staticmethod
+    def _private_context_user(room: GameRoom) -> str:
+        if room.source != "private" or not room.creator_qq:
+            return ""
+        if room.multiplayer.enabled:
+            if len(room.multiplayer.seats) > 1:
+                return ""
+            if room.multiplayer.seats:
+                seat = room.multiplayer.seats[0]
+                if not seat.identity_confirmed or seat.qq != room.creator_qq:
+                    return ""
+        elif room.player_token and (
+            not room.player_identity_confirmed or room.player_qq != room.creator_qq
+        ):
+            return ""
+        return room.creator_qq
+
+    @classmethod
+    def _private_qq_room_state(cls, room: GameRoom) -> str:
+        status = {
+            "waiting": "等待用户绑定并进入玩家席",
+            "setup": "等待开始",
+            "active": "进行中",
+            "finished": "本局已结束，房间仍开放",
+            "rematch_pending": "等待 Bot 决定是否再来一局",
+            "paused": "已暂停",
+            "closed": "已关闭",
+        }.get(room.status, room.status)
+        base = (
+            f"当前私聊房间：游戏={cls._game_label(room.game_type)}，状态={status}；"
+            f"该游戏在本房间累计{cls._private_score_text(room)}。"
+        )
+        game = room.game
+        if game is None:
+            return base
+        if isinstance(game, GomokuGame):
+            human = "黑" if game.human_color == GOMOKU_BLACK else "白"
+            bot = "黑" if game.bot_color == GOMOKU_BLACK else "白"
+            turn = "玩家" if game.turn == game.human_color else "Bot"
+            detail = (
+                f"玩家执{human}，Bot 执{bot}，黑方固定先手；已落子 {len(game.history)} 手"
+                + ("。" if game.finished else f"，当前轮到{turn}。")
+            )
+        elif isinstance(game, TicTacToeGame):
+            human = "X" if game.human_mark == TICTACTOE_X else "O"
+            bot = "X" if game.bot_mark == TICTACTOE_X else "O"
+            turn = "玩家" if game.turn == game.human_mark else "Bot"
+            detail = (
+                f"玩家执 {human}，Bot 执 {bot}，X 固定先手；已落子 {len(game.history)} 手"
+                + ("。" if game.finished else f"，当前轮到{turn}。")
+            )
+        elif isinstance(game, XiangqiGame):
+            human = "红" if game.human_side == XIANGQI_RED else "黑"
+            bot = "红" if game.bot_side == XIANGQI_RED else "黑"
+            turn = "玩家" if game.turn == game.human_side else "Bot"
+            detail = (
+                f"玩家执{human}，Bot 执{bot}，红方固定先手；已走 {len(game.moves)} 手"
+                + ("。" if game.finished else f"，当前轮到{turn}。")
+            )
+        elif isinstance(game, PigDiceGame):
+            turn = "玩家" if game.turn == "human" else "Bot"
+            detail = (
+                f"玩家 {game.human_score} 分，Bot {game.bot_score} 分，目标 {game.target_score} 分；"
+                f"当前轮到{turn}，本回合暂存 {game.turn_total} 分。"
+            )
+        elif isinstance(game, DrawGuessGame):
+            state = "已猜中" if game.solved else "已结束" if game.finished else "作画中"
+            detail = (
+                f"合作玩法，状态={state}；Bot 已猜 {len(game.guesses)}/{game.max_guesses} 次。"
+            )
+        elif isinstance(game, TurtleSoupGame):
+            mode = "Bot 出题、玩家猜" if game.mode == "bot_host" else "玩家出题、Bot 猜"
+            detail = (
+                f"玩法={mode}；公开回合 {game.turn_count} 次，提问 {game.question_count} 次，"
+                f"完整猜测 {game.answer_attempts} 次，已使用提示 {game.hints_used} 次。"
+            )
+        else:
+            detail = ""
+        return base + detail
+
+    @staticmethod
+    def _private_score_text(room: GameRoom) -> str:
+        score = room.current_score
+        if room.game_type == "draw_guess":
+            return (
+                f"合作成功 {score.human_wins}、未完成 {score.bot_wins}、"
+                f"完成 {score.completed} 轮"
+            )
+        if room.game_type == "turtle_soup":
+            return (
+                f"玩家侧计分 {score.human_wins}、Bot 侧计分 {score.bot_wins}、"
+                f"完成 {score.completed} 题"
+            )
+        return (
+            f"玩家胜 {score.human_wins}、Bot 胜 {score.bot_wins}、"
+            f"平局 {score.draws}、完成 {score.completed} 局"
+        )
 
     @staticmethod
     def _live_game_state(room: GameRoom) -> list[str]:
@@ -726,15 +878,7 @@ class GameCompanionPlugin(Star):
             self._capture_round_participants(room, reset=True)
             if room.player_identity_confirmed:
                 self._notify_companion_activity(room, "updated")
-            opening = (
-                (
-                    "新的一局海龟汤已经出题完成，请用当前人格简短邀请玩家开始提问。"
-                    if room.turtle_soup_mode == "bot_host"
-                    else "玩家出题、Bot 猜的海龟汤已经开始，请用当前人格简短邀请当前玩家给出第一条线索。"
-                )
-                if room.game_type == "turtle_soup"
-                else f"新的一局{game_label}刚刚开始，请用当前人格简短说一句开场话。"
-            )
+            opening = self._opening_commentary_prompt(room)
             self._spawn(
                 self._comment(
                     room,
@@ -835,32 +979,8 @@ class GameCompanionPlugin(Star):
             return
         if event_name == "game_finished":
             self._queue_companion_round_event(room, payload)
-            if room.game_type == "turtle_soup" and isinstance(
-                room.game, TurtleSoupGame
-            ):
-                result = (
-                    "Bot 成功猜中玩家的汤底"
-                    if room.game.mode == "player_host" and room.game.bot_solved
-                    else "玩家结束了出题"
-                    if room.game.mode == "player_host"
-                    else "玩家成功解开汤底"
-                    if room.game.solved
-                    else "玩家放弃，汤底已揭晓"
-                )
-            elif room.game_type == "draw_guess" and isinstance(
-                room.game, DrawGuessGame
-            ):
-                result = (
-                    f"Bot 在第 {len(room.game.guesses)} 次猜中了“{room.game.answer}”"
-                    if room.game.solved
-                    else f"这一轮没能猜中，答案是“{room.game.answer}”"
-                )
-            else:
-                result = {
-                    "human_win": "玩家获胜",
-                    "bot_win": "Bot 获胜",
-                    "draw": "平局",
-                }.get(str(payload.get("result")), "对局结束")
+            self._remember_private_game_result(room, payload)
+            result = self._round_result_text(room, payload, reveal_answer=True)
             self._spawn(
                 self._comment(
                     room,
@@ -889,7 +1009,129 @@ class GameCompanionPlugin(Star):
             return
         if event_name == "room_destroyed":
             self._notify_companion_activity(room, "ended")
+            self._finalize_private_game_result(room)
             await self._record_room_memory(room)
+
+    @classmethod
+    def _opening_commentary_prompt(cls, room: GameRoom) -> str:
+        game = room.game
+        if isinstance(game, GomokuGame):
+            human = "黑" if game.human_color == GOMOKU_BLACK else "白"
+            bot = "黑" if game.bot_color == GOMOKU_BLACK else "白"
+            first = "玩家" if game.human_color == GOMOKU_BLACK else "Bot"
+            facts = (
+                f"玩家执{human}，Bot 执{bot}；五子棋固定由黑方先手，因此本局由{first}先行。"
+            )
+        elif isinstance(game, XiangqiGame):
+            human = "红" if game.human_side == XIANGQI_RED else "黑"
+            bot = "红" if game.bot_side == XIANGQI_RED else "黑"
+            first = "玩家" if game.human_side == XIANGQI_RED else "Bot"
+            facts = (
+                f"玩家执{human}，Bot 执{bot}；中国象棋固定由红方先手，因此本局由{first}先行。"
+            )
+        elif isinstance(game, TicTacToeGame):
+            human = "X" if game.human_mark == TICTACTOE_X else "O"
+            bot = "X" if game.bot_mark == TICTACTOE_X else "O"
+            first = "玩家" if game.human_mark == TICTACTOE_X else "Bot"
+            facts = f"玩家执 {human}，Bot 执 {bot}；井字棋固定由 X 先手，因此本局由{first}先行。"
+        elif isinstance(game, PigDiceGame):
+            first = "玩家" if game.turn == "human" else "Bot"
+            facts = f"本局随机先手结果已经确定，由{first}先掷，目标是先得到 {game.target_score} 分。"
+        elif isinstance(game, DrawGuessGame):
+            facts = (
+                f"这是合作玩法：玩家作画，Bot 猜图；限时 {game.duration_seconds} 秒，"
+                f"Bot 最多猜 {game.max_guesses} 次。"
+            )
+        elif isinstance(game, TurtleSoupGame):
+            facts = (
+                "新题已经准备完成，由 Bot 出题、玩家提问。"
+                if game.mode == "bot_host"
+                else "当前由玩家提供公开线索，Bot 负责提问和猜测。"
+            )
+        else:
+            facts = f"新的一局{cls._game_label(room.game_type)}已经开始。"
+        return (
+            f"{cls._game_label(room.game_type)}开局事实：{facts}"
+            "请严格依据这些事实，用当前人格简短自然地说一句开场话；"
+            "不得说反双方身份、颜色、标记或先后手，也不要复述完整规则。"
+        )
+
+    @staticmethod
+    def _round_result_text(
+        room: GameRoom, payload: dict[str, Any], *, reveal_answer: bool
+    ) -> str:
+        game = room.game
+        if isinstance(game, TurtleSoupGame):
+            if game.mode == "player_host":
+                return "Bot 成功猜中玩家的汤底" if game.bot_solved else "玩家结束了出题"
+            return "玩家成功解开汤底" if game.solved else "玩家放弃，汤底已揭晓"
+        if isinstance(game, DrawGuessGame):
+            if game.solved:
+                return (
+                    f"Bot 在第 {len(game.guesses)} 次猜中了“{game.answer}”"
+                    if reveal_answer
+                    else f"Bot 在第 {len(game.guesses)} 次成功猜中"
+                )
+            return (
+                f"这一轮没能猜中，答案是“{game.answer}”"
+                if reveal_answer
+                else "这一轮 Bot 未能猜中"
+            )
+        return {
+            "human_win": "玩家获胜",
+            "bot_win": "Bot 获胜",
+            "draw": "平局",
+            "cooperative_success": "合作成功",
+            "cooperative_unsolved": "合作未完成",
+        }.get(str(payload.get("result")), "对局结束")
+
+    @classmethod
+    def _private_result_summary(
+        cls, room: GameRoom, payload: dict[str, Any]
+    ) -> str:
+        game = room.game
+        side = ""
+        if isinstance(game, GomokuGame):
+            human = "黑" if game.human_color == GOMOKU_BLACK else "白"
+            bot = "黑" if game.bot_color == GOMOKU_BLACK else "白"
+            side = f"本局玩家执{human}、Bot 执{bot}；"
+        elif isinstance(game, XiangqiGame):
+            human = "红" if game.human_side == XIANGQI_RED else "黑"
+            bot = "红" if game.bot_side == XIANGQI_RED else "黑"
+            side = f"本局玩家执{human}、Bot 执{bot}；"
+        elif isinstance(game, TicTacToeGame):
+            human = "X" if game.human_mark == TICTACTOE_X else "O"
+            bot = "X" if game.bot_mark == TICTACTOE_X else "O"
+            side = f"本局玩家执 {human}、Bot 执 {bot}；"
+        return (
+            f"最近一局结果：{cls._game_label(room.game_type)}，"
+            f"{cls._round_result_text(room, payload, reveal_answer=False)}；{side}"
+            f"该游戏在此房间累计{cls._private_score_text(room)}。"
+        )
+
+    def _remember_private_game_result(
+        self, room: GameRoom, payload: dict[str, Any]
+    ) -> None:
+        if not getattr(self, "private_qq_game_context_enabled", False):
+            return
+        user_qq = self._private_context_user(room)
+        if not user_qq:
+            return
+        self._recent_private_game_results[room.session_id] = _RecentPrivateGameResult(
+            room_id=room.room_id,
+            user_qq=user_qq,
+            summary=self._private_result_summary(room, payload),
+        )
+
+    def _finalize_private_game_result(self, room: GameRoom) -> None:
+        recent = getattr(self, "_recent_private_game_results", {}).get(room.session_id)
+        if recent is None or recent.room_id != room.room_id:
+            return
+        ttl = getattr(self, "recent_game_result_ttl_seconds", 0)
+        if ttl <= 0:
+            self._recent_private_game_results.pop(room.session_id, None)
+        else:
+            recent.expires_at = time.time() + ttl
 
     async def submit_room_chat(
         self, room: GameRoom, text: str, *, visitor_token: str

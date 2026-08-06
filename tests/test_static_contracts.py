@@ -20,6 +20,9 @@ def test_config_defaults_match_product_contract() -> None:
     identity = schema["identity"]["items"]
     assert identity["enable_trusted_browser"]["default"] is False
     assert identity["trusted_browser_ttl_days"]["default"] == 30
+    context = schema["context"]["items"]
+    assert context["enable_private_qq_game_context"]["default"] is True
+    assert context["recent_game_result_ttl_minutes"]["default"] == 30
     assert schema["xiangqi"]["items"]["allow_engine_download"]["default"] is True
     assert schema["xiangqi"]["items"]["auto_download_engine"]["default"] is False
     assert schema["turtle_soup"]["items"]["max_hints"]["default"] == 3
@@ -51,7 +54,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.2.0"
+    assert metadata["version"] == "0.2.1"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:

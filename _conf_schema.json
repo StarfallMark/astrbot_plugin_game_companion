@@ -54,6 +54,25 @@
       }
     }
   },
+  "context": {
+    "description": "QQ 游戏事实衔接",
+    "type": "object",
+    "hint": "只向对应的私聊单玩家临时提供只读游戏事实；不注入 WebUI 对话，不写入普通聊天历史，群聊始终隔离。",
+    "items": {
+      "enable_private_qq_game_context": {
+        "description": "私聊中提供游戏事实",
+        "type": "bool",
+        "default": true,
+        "hint": "让 Bot 在私聊中回答当前游戏、比分、执子和最近结果；所有游戏操作仍只能在 WebUI 完成。"
+      },
+      "recent_game_result_ttl_minutes": {
+        "description": "房间关闭后保留最近结果分钟数",
+        "type": "int",
+        "default": 30,
+        "hint": "范围 0-1440；0 表示房间关闭后立即删除。结果只保存在内存中，插件重载后不恢复。"
+      }
+    }
+  },
   "rooms": {
     "description": "房间权限与并行数量",
     "type": "object",
