@@ -751,9 +751,19 @@ class RoomManager:
         from_column: int = -1,
         to_row: int = -1,
         to_column: int = -1,
+        interaction: str = "click",
+        color: int = 0,
+        pair_row: int = -1,
+        pair_column: int = -1,
+        pair_color: int = 0,
     ) -> None:
-        """Apply one browser move, then calculate the Bot response off-loop."""
+        """Apply one browser move, optionally using the playful drag path."""
         board_event: dict[str, object] = {"actor": "human"}
+        follow_up_event: dict[str, object] | None = None
+        playful = str(interaction or "click").strip().lower() in {
+            "drag", "drag_pair", "drag_assist"
+        }
+        paired = str(interaction or "").strip().lower() == "drag_pair"
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             if visitor.token != room.player_token:
@@ -771,12 +781,46 @@ class RoomManager:
                     int(to_column),
                 )
             elif isinstance(room.game, GomokuGame):
-                room.game.place(int(row), int(column), room.game.human_color)
+                game = room.game
+                requested_color = int(color) if int(color) in {1, 2} else game.human_color
+                if game.turn == game.human_color:
+                    if playful and requested_color != game.turn:
+                        game.place_for_fun(
+                            int(row), int(column), requested_color,
+                            next_turn=game.human_color,
+                        )
+                    else:
+                        game.place(int(row), int(column), game.human_color)
+                elif playful and game.turn == game.bot_color and requested_color == game.bot_color:
+                    game.place(int(row), int(column), game.bot_color)
+                else:
+                    raise ValueError("现在不是可拖拽落子的时机")
                 board_event.update(
                     row=int(row),
                     column=int(column),
-                    color=room.game.human_color,
+                    color=requested_color,
+                    interaction="drag" if playful else "click",
                 )
+                if paired and not game.finished:
+                    second_color = int(pair_color) if int(pair_color) in {1, 2} else (
+                        game.bot_color if requested_color == game.human_color else game.human_color
+                    )
+                    if game.turn == second_color:
+                        game.place(int(pair_row), int(pair_column), second_color)
+                    elif playful:
+                        game.place_for_fun(
+                            int(pair_row), int(pair_column), second_color,
+                            next_turn=game.human_color,
+                        )
+                    else:
+                        raise ValueError("第二枚棋子无法落下")
+                    follow_up_event = {
+                        "actor": "bot" if second_color == game.bot_color else "human",
+                        "row": int(pair_row),
+                        "column": int(pair_column),
+                        "color": second_color,
+                        "interaction": "drag_pair",
+                    }
             elif isinstance(room.game, TicTacToeGame):
                 room.game.place(int(row), int(column), room.game.human_mark)
                 board_event.update(
@@ -789,10 +833,15 @@ class RoomManager:
             room.touch()
             finished = room.game.finished
         await self._emit("board_changed", room, board_event)
+        if follow_up_event is not None:
+            await self._emit("board_changed", room, follow_up_event)
         if finished:
             await self._finish_game(room)
             return
-        await self._bot_turn(room)
+        if follow_up_event is None or (
+            isinstance(room.game, GomokuGame) and room.game.turn == room.game.bot_color
+        ):
+            await self._bot_turn(room)
 
     async def player_dice_action(
         self, room: GameRoom, visitor_token: str, action: str

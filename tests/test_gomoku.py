@@ -4,6 +4,7 @@ import pytest
 from astrbot_plugin_game_companion.gomoku import BLACK, EMPTY, WHITE, GomokuGame
 from astrbot_plugin_game_companion.main import GameCompanionPlugin
 from astrbot_plugin_game_companion.models import GameRoom
+from astrbot_plugin_game_companion.room_manager import RoomManager
 
 
 def make_room(game: GomokuGame) -> GameRoom:
@@ -41,11 +42,54 @@ def test_move_rejects_wrong_turn_and_occupied_cell() -> None:
     game = GomokuGame(human_color=BLACK)
     with pytest.raises(ValueError, match="轮到"):
         game.place(7, 7, WHITE)
-
     game.place(7, 7, BLACK)
     with pytest.raises(ValueError, match="有棋子"):
         game.place(7, 7, WHITE)
 
+
+def test_dragged_opponent_stone_can_keep_the_players_turn() -> None:
+    game = GomokuGame(human_color=BLACK)
+
+    game.place_for_fun(7, 7, WHITE, next_turn=BLACK)
+
+    assert game.board[7][7] == WHITE
+    assert game.turn == BLACK
+    assert game.history[-1] == (7, 7, WHITE)
+
+
+@pytest.mark.asyncio
+async def test_drag_pair_places_two_stones_before_bot_turn() -> None:
+    manager = RoomManager(max_private_rooms=2)
+    room = await manager.create_room(
+        source="private",
+        session_id="private:10001",
+        platform="test",
+        group_id="",
+        creator_qq="10001",
+        creator_name="玩家",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="easy",
+    )
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+
+    await manager.player_move(
+        room,
+        visitor.token,
+        row=7,
+        column=7,
+        color=BLACK,
+        pair_row=7,
+        pair_column=8,
+        pair_color=WHITE,
+        interaction="drag_pair",
+    )
+
+    assert room.game.board[7][7] == BLACK
+    assert room.game.board[7][8] == WHITE
+    assert room.game.turn == BLACK
+    assert len(room.game.history) == 2
 
 @pytest.mark.parametrize("difficulty", ["normal", "hard"])
 def test_ai_blocks_immediate_human_win(difficulty: str) -> None:

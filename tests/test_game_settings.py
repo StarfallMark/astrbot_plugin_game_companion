@@ -132,6 +132,32 @@ async def test_accepted_blackjack_rematch_starts_a_new_round_in_the_same_room(
     assert room.difficulty == "hard"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_reply", ["", "{accept: true}", '{"reply": "再来一局"}'])
+async def test_malformed_rematch_decision_never_restarts_room(model_reply: str) -> None:
+    plugin = make_plugin()
+    plugin._generate_persona_text = AsyncMock(return_value=model_reply)
+    room = await plugin.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    visitor = await plugin.manager.join(room)
+    await plugin.manager.claim_and_start(room, visitor.token, "human_black")
+    room.status = "finished"
+    await plugin.manager.request_rematch(room, visitor.token)
+
+    await plugin._decide_rematch(room, visitor=visitor)
+
+    assert room.room_id not in plugin.manager.rooms
+
+
 @pytest.mark.parametrize(
     "payload",
     [

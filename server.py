@@ -257,6 +257,11 @@ class GameRoomServer:
             from_column=int(payload.get("from_column", -1)),
             to_row=int(payload.get("to_row", -1)),
             to_column=int(payload.get("to_column", -1)),
+            interaction=str(payload.get("interaction") or "click"),
+            color=int(payload.get("color", 0)),
+            pair_row=int(payload.get("pair_row", -1)),
+            pair_column=int(payload.get("pair_column", -1)),
+            pair_color=int(payload.get("pair_color", 0)),
         )
         return self._response({"room": room.public_snapshot(visitor_token)})
 

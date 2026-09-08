@@ -28,8 +28,18 @@
   let busy = false;
   let chatBusy = false;
   let pendingMove = null;
+  let pendingGomokuMoves = [];
+  let gomokuDrag = null;
+  let gomokuDragCommitTimer = 0;
+  let gomokuDropAnimations = [];
+  let gomokuDropFrame = 0;
+  let lastTurnSignature = "";
+  let boardLongPressTimer = 0;
+  let suppressNextBoardClick = false;
+  let xiangqiDragStart = null;
   let activeRoomView = "game";
   let lastSeenMessageId = 0;
+  let lastRenderedMessageId = 0;
   let renderedDiceSequence = 0;
   let drawStrokes = [];
   let activeDrawStroke = null;
@@ -37,6 +47,21 @@
   let drawSyncPromise = null;
   let drawDirty = false;
   let drawRevision = -1;
+  const requestTimeoutMs = 15000;
+  let lastBoardSignature = "";
+  let boardAnimationTimer = 0;
+  let lastSoupEntrySignature = "";
+  let lastBlackjackEventSignature = "";
+
+  function pulse(element, className, duration = 520) {
+    if (!element) return;
+    window.clearTimeout(Number(element.dataset.pulseTimer || 0));
+    element.classList.remove(className);
+    void element.offsetWidth;
+    element.classList.add(className);
+    const timer = window.setTimeout(() => element.classList.remove(className), duration);
+    element.dataset.pulseTimer = String(timer);
+  }
 
   function icons() {
     if (window.lucide?.createIcons) window.lucide.createIcons();
@@ -76,12 +101,28 @@
   }
 
   async function request(method, action, payload = {}) {
-    const response = await window.fetch(endpoint(action), {
-      method,
-      headers: method === "POST" ? { "Content-Type": "application/json" } : {},
-      body: method === "POST" ? JSON.stringify(payload) : undefined,
-      cache: "no-store",
-    });
+    const controller = typeof window.AbortController === "function"
+      ? new window.AbortController()
+      : null;
+    const timeout = window.setTimeout(
+      () => controller?.abort(),
+      requestTimeoutMs,
+    );
+    let response;
+    try {
+      response = await window.fetch(endpoint(action), {
+        method,
+        headers: method === "POST" ? { "Content-Type": "application/json" } : {},
+        body: method === "POST" ? JSON.stringify(payload) : undefined,
+        cache: "no-store",
+        signal: controller?.signal,
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error("请求超时，请检查网络后重试");
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
     let data = null;
     try { data = await response.json(); } catch (_error) { data = null; }
     if (!response.ok || data?.status === "error") {
@@ -100,6 +141,7 @@
     window.localStorage.setItem(storageKey, visitorToken);
     setRoom(data.room);
     lastSeenMessageId = latestMessageId(room);
+    lastRenderedMessageId = lastSeenMessageId;
     syncGameUi();
     render();
   }
@@ -142,6 +184,14 @@
     if (previousType !== room?.game_type) {
       selectedPiece = null;
       pendingMove = null;
+      pendingGomokuMoves = [];
+      window.clearTimeout(gomokuDragCommitTimer);
+      lastBoardSignature = "";
+      lastSoupEntrySignature = "";
+      lastBlackjackEventSignature = "";
+      lastTurnSignature = "";
+      gomokuDropAnimations = [];
+      window.cancelAnimationFrame(gomokuDropFrame);
       drawStrokes = [];
       drawDirty = false;
       drawRevision = -1;
@@ -227,6 +277,7 @@
     const pigDice = room.game_type === "pig_dice";
     const drawGuess = room.game_type === "draw_guess";
     const blackjack = room.game_type === "blackjack";
+    const gomoku = room.game_type === "gomoku";
     document.title = `游戏伴侣 · ${gameLabel()}`;
     document.getElementById("gameTitle").textContent = gameLabel();
     document.getElementById("brandIcon").setAttribute(
@@ -238,6 +289,17 @@
     diceStage.hidden = !pigDice;
     blackjackStage.hidden = !blackjack;
     drawStage.hidden = !drawGuess;
+    document.getElementById("gomokuTray").hidden = !gomoku;
+    if (gomoku && room.game) {
+      const humanPiece = document.getElementById("gomokuHumanPiece");
+      const botPiece = document.getElementById("gomokuBotPiece");
+      humanPiece.classList.toggle("black", room.game.human_color === 1);
+      humanPiece.classList.toggle("white", room.game.human_color !== 1);
+      botPiece.classList.toggle("black", room.game.bot_color === 1);
+      botPiece.classList.toggle("white", room.game.bot_color !== 1);
+      humanPiece.querySelector("span:last-child").textContent = `玩家棋子（${room.game.human_color === 1 ? "黑" : "白"}）`;
+      botPiece.querySelector("span:last-child").textContent = `Bot 棋子（${room.game.bot_color === 1 ? "黑" : "白"}）`;
+    }
     boardStage.classList.toggle("xiangqi", xiangqi);
     boardStage.classList.toggle("tictactoe", tictactoe);
     board.width = xiangqi ? 720 : 760;
@@ -317,8 +379,28 @@
     renderBlackjack();
     renderDrawGuess();
     drawBoard();
+    animateBoardChange();
     renderTurn();
     icons();
+  }
+
+  function animateBoardChange() {
+    if (!boardStage || !room?.game || ["turtle_soup", "pig_dice", "draw_guess", "blackjack"].includes(room.game_type)) return;
+    const move = room.game.last_move;
+    const signature = `${room.game_type}:${Array.isArray(move) ? move.join(",") : ""}:${room.status}`;
+    if (!lastBoardSignature) {
+      lastBoardSignature = signature;
+      return;
+    }
+    if (signature === lastBoardSignature) return;
+    lastBoardSignature = signature;
+    window.clearTimeout(boardAnimationTimer);
+    boardStage.classList.remove("board-updated");
+    void boardStage.offsetWidth;
+    boardStage.classList.add("board-updated");
+    boardAnimationTimer = window.setTimeout(() => {
+      boardStage.classList.remove("board-updated");
+    }, 520);
   }
 
   function renderSeat() {
@@ -495,6 +577,7 @@
   function renderMessages() {
     const list = document.getElementById("messages");
     const wasNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+    const previousRenderedMessageId = lastRenderedMessageId;
     list.replaceChildren();
     const messages = Array.isArray(room.messages) ? room.messages : [];
     if (!messages.length) {
@@ -507,7 +590,9 @@
     messages.slice(-60).forEach((message) => {
       const role = message.role || "system";
       const item = document.createElement("article");
-      item.className = `message ${role} ${message.message_type || "chat"}`;
+      const messageId = Number(message.id || 0);
+      const isNew = messageId > previousRenderedMessageId;
+      item.className = `message ${role} ${message.message_type || "chat"}${isNew ? " is-new" : ""}`;
       if (role !== "system") {
         const meta = document.createElement("span");
         meta.className = "message-meta";
@@ -528,6 +613,7 @@
       list.appendChild(item);
     });
     if (wasNearBottom || activeRoomView === "chat") list.scrollTop = list.scrollHeight;
+    lastRenderedMessageId = latestMessageId(room);
     if (activeRoomView === "chat") lastSeenMessageId = latestMessageId(room);
   }
 
@@ -576,14 +662,19 @@
     history.replaceChildren();
     const entries = Array.isArray(game?.entries) ? game.entries.slice() : [];
     if (!entries.length) {
+      lastSoupEntrySignature = "";
       const empty = document.createElement("span");
       empty.className = "soup-empty";
       empty.textContent = game?.preparing ? "题目生成并校验后会显示在这里" : "还没有公开问答";
       history.appendChild(empty);
     } else {
-      entries.forEach((entry) => {
+      const latestIndex = entries.length - 1;
+      const latestEntry = entries[latestIndex] || {};
+      const latestSignature = `${latestEntry.kind || ""}|${latestEntry.prompt || ""}|${latestEntry.response || ""}|${Boolean(latestEntry.pending)}`;
+      const latestChanged = Boolean(latestSignature && latestSignature !== lastSoupEntrySignature);
+      entries.forEach((entry, index) => {
         const item = document.createElement("article");
-        item.className = `soup-entry ${entry.kind || "question"} ${entry.pending ? "pending" : ""}`;
+        item.className = `soup-entry ${entry.kind || "question"} ${entry.pending ? "pending" : ""}${latestChanged && index === latestIndex ? " is-latest" : ""}`;
         const prompt = document.createElement("p");
         prompt.className = "prompt";
         prompt.textContent = entry.kind === "reverse"
@@ -602,6 +693,7 @@
         history.appendChild(item);
       });
       history.scrollTop = history.scrollHeight;
+      lastSoupEntrySignature = latestSignature;
     }
 
     const solution = document.getElementById("soupSolution");
@@ -629,8 +721,11 @@
     if (game?.action_count && game.action_count !== renderedDiceSequence) {
       renderedDiceSequence = game.action_count;
       cube.classList.add("is-rolling");
+      pulse(document.querySelector(".dice-table"), "dice-action");
       window.setTimeout(() => cube.classList.remove("is-rolling"), 420);
     }
+    document.getElementById("diceStage").classList.toggle("is-finished", Boolean(game?.finished));
+    document.getElementById("diceStage").classList.toggle("is-bust", Number(game?.last_roll || 0) === 1);
 
     const status = document.getElementById("diceStatus");
     if (!game) status.textContent = "等待开局";
@@ -690,14 +785,28 @@
   function renderBlackjack() {
     if (room?.game_type !== "blackjack") return;
     const game = room.game || {};
+    const historyEntries = Array.isArray(game.history) ? game.history : [];
+    const latestHistory = historyEntries[historyEntries.length - 1] || {};
+    const latestEventSignature = `${latestHistory.action || ""}|${latestHistory.number || ""}|${latestHistory.card?.rank || ""}|${latestHistory.dealer_total || ""}|${latestHistory.value || ""}`;
+    const latestEventChanged = Boolean(latestEventSignature && latestEventSignature !== lastBlackjackEventSignature);
+    const dealerEventChanged = latestEventChanged && ["dealer_hit", "settle"].includes(latestHistory.action);
+    const playerEventChanged = latestEventChanged && ["hit", "stand", "surrender"].includes(latestHistory.action);
+    document.getElementById("blackjackStage").classList.toggle("is-finished", Boolean(game.finished));
     document.getElementById("blackjackDifficulty").textContent = difficultyLabel(room.difficulty);
 
     const dealerCards = document.getElementById("blackjackDealerCards");
     dealerCards.replaceChildren();
-    (Array.isArray(game.dealer_cards) ? game.dealer_cards : []).forEach((card) => {
-      dealerCards.appendChild(blackjackCardNode(card));
+    const dealerCardList = Array.isArray(game.dealer_cards) ? game.dealer_cards : [];
+    dealerCardList.forEach((card, index) => {
+      const node = blackjackCardNode(card);
+      if (dealerEventChanged && index === dealerCardList.length - 1) node.classList.add("is-new-card");
+      dealerCards.appendChild(node);
     });
-    if (game.dealer_hidden) dealerCards.appendChild(blackjackCardNode(null, true));
+    if (game.dealer_hidden) {
+      const hidden = blackjackCardNode(null, true);
+      if (latestHistory.action === "settle") hidden.classList.add("is-new-card");
+      dealerCards.appendChild(hidden);
+    }
     document.getElementById("blackjackDealerTotal").textContent = game.dealer_hidden
       ? "?"
       : String(game.dealer_total ?? "?");
@@ -728,8 +837,18 @@
         header.append(title, badge);
         const cards = document.createElement("div");
         cards.className = "playing-cards";
-        (Array.isArray(hand.cards) ? hand.cards : []).forEach((card) => {
-          cards.appendChild(blackjackCardNode(card));
+        const cardList = Array.isArray(hand.cards) ? hand.cards : [];
+        cardList.forEach((card, index) => {
+          const node = blackjackCardNode(card);
+          node.draggable = Boolean(own && current && !busy && !game.finished);
+          if (node.draggable) {
+            node.addEventListener("dragstart", (event) => {
+              event.dataTransfer?.setData("text/plain", "hit");
+              event.dataTransfer?.setData("application/x-game-action", "hit");
+            });
+          }
+          if (playerEventChanged && Number(latestHistory.number) === Number(number) && index === cardList.length - 1) node.classList.add("is-new-card");
+          cards.appendChild(node);
         });
         const footer = document.createElement("footer");
         const total = document.createElement("strong");
@@ -742,6 +861,7 @@
       });
 
     const turn = document.getElementById("blackjackTurn");
+    turn.classList.toggle("is-your-turn", Boolean(room.is_current_player && !game.finished));
     const remaining = room.turn_deadline
       ? Math.max(0, Math.ceil(room.turn_deadline - Number(room.server_time || 0)))
       : 0;
@@ -760,8 +880,9 @@
 
     const history = document.getElementById("blackjackHistory");
     history.replaceChildren();
-    const events = Array.isArray(game.history) ? game.history.slice(-12).reverse() : [];
+    const events = historyEntries.slice(-12).reverse();
     if (!events.length) {
+      lastBlackjackEventSignature = "";
       const empty = document.createElement("p");
       empty.className = "blackjack-empty";
       empty.textContent = "发牌后，要牌、停牌和庄家补牌都会记录在这里。";
@@ -769,7 +890,8 @@
     } else {
       events.forEach((entry) => {
         const item = document.createElement("div");
-        item.className = `blackjack-event ${entry.action || ""}`;
+        const isLatest = latestEventChanged && entry === latestHistory;
+        item.className = `blackjack-event ${entry.action || ""}${isLatest ? " is-latest" : ""}`;
         let text;
         if (entry.action === "hit") {
           text = `${entry.number} 号要牌 ${entry.card?.rank || ""}${entry.card?.suit || ""}，${entry.value} 点`;
@@ -787,6 +909,7 @@
         item.textContent = text;
         history.appendChild(item);
       });
+      lastBlackjackEventSignature = latestEventSignature;
     }
 
     const hand = game.hands?.[String(room.visitor_number)];
@@ -844,6 +967,11 @@
     const remaining = room.status === "paused"
       ? Number(game.remaining_seconds || 0)
       : Math.max(0, Math.ceil(Number(game.deadline || 0) - Number(room.server_time || Date.now() / 1000)));
+    document.getElementById("drawStage").classList.toggle(
+      "is-urgent",
+      Boolean(!game.finished && room.status === "active" && remaining > 0 && remaining <= 10),
+    );
+    document.getElementById("drawStage").classList.toggle("is-finished", Boolean(game.finished));
     document.getElementById("drawTimer").textContent = !room.game
       ? "等待开始"
       : game.finished
@@ -1064,6 +1192,11 @@
   function renderTurn() {
     const stone = document.getElementById("turnStone");
     const label = document.getElementById("turnLabel");
+    const turnSignature = `${room?.game_type || ""}|${room?.game?.turn ?? ""}|${room?.status || ""}`;
+    if (lastTurnSignature && turnSignature !== lastTurnSignature) {
+      pulse(document.querySelector(".turn-panel"), "turn-swapped", 620);
+    }
+    lastTurnSignature = turnSignature;
     stone.className = "turn-stone";
     stone.textContent = "";
     if (room.game_type === "turtle_soup") {
@@ -1227,13 +1360,23 @@
     });
     const cells = room?.game?.board || [];
     cells.forEach((row, rowIndex) => row.forEach((color, columnIndex) => {
-      if (color) drawGomokuStone(rowIndex, columnIndex, color, margin, gap);
+      if (color) {
+        const drop = gomokuDropAnimations.find((item) => item.row === rowIndex && item.column === columnIndex);
+        const progress = drop ? Math.min(1, (performance.now() - drop.startedAt) / 430) : 1;
+        const eased = 1 - ((1 - progress) ** 3);
+        drawGomokuStone(rowIndex, columnIndex, color, margin, gap, .72 + eased * .28, eased);
+      }
     }));
-    if (pendingMove?.kind === "gomoku" && !room?.game?.board?.[pendingMove.row]?.[pendingMove.column]) {
-      drawGomokuStone(pendingMove.row, pendingMove.column, pendingMove.color, margin, gap);
-    }
-    const lastMove = pendingMove?.kind === "gomoku"
-      ? [pendingMove.row, pendingMove.column]
+    const previewMoves = pendingMove?.kind === "gomoku"
+      ? [...pendingGomokuMoves, pendingMove]
+      : pendingGomokuMoves;
+    previewMoves.forEach((move) => {
+      if (!room?.game?.board?.[move.row]?.[move.column]) {
+        drawGomokuStone(move.row, move.column, move.color, margin, gap);
+      }
+    });
+    const lastMove = previewMoves.length
+      ? [previewMoves[previewMoves.length - 1].row, previewMoves[previewMoves.length - 1].column]
       : room?.game?.last_move;
     if (Array.isArray(lastMove)) {
       context.beginPath();
@@ -1243,14 +1386,31 @@
     }
   }
 
-  function drawGomokuStone(row, column, color, margin, gap) {
+  function drawGomokuStone(row, column, color, margin, gap, scale = 1, opacity = 1) {
     context.beginPath();
-    context.arc(margin + column * gap, margin + row * gap, gap * 0.41, 0, Math.PI * 2);
+    context.globalAlpha = opacity;
+    context.arc(margin + column * gap, margin + row * gap, gap * 0.41 * scale, 0, Math.PI * 2);
     context.fillStyle = color === 1 ? "#242724" : "#f7f8f5";
     context.fill();
     context.strokeStyle = color === 1 ? "#121412" : "#9da39e";
     context.lineWidth = 1.5;
     context.stroke();
+    context.globalAlpha = 1;
+  }
+
+  function animateGomokuDrops(moves) {
+    gomokuDropAnimations = moves.filter((move) => move && gomokuPointIsValid(move))
+      .map((move) => ({ ...move, startedAt: performance.now() }));
+    window.cancelAnimationFrame(gomokuDropFrame);
+    const tick = () => {
+      drawBoard();
+      if (gomokuDropAnimations.some((move) => performance.now() - move.startedAt < 430)) {
+        gomokuDropFrame = window.requestAnimationFrame(tick);
+      } else {
+        gomokuDropAnimations = [];
+      }
+    };
+    gomokuDropFrame = window.requestAnimationFrame(tick);
   }
 
   function xiangqiFlipped() {
@@ -1398,8 +1558,13 @@
   }
 
   async function moveAt(event) {
+    if (suppressNextBoardClick) {
+      suppressNextBoardClick = false;
+      return;
+    }
     if (busy || !room?.is_player || room.status !== "active" || !room.game) return;
     if (room.game_type === "pig_dice") return;
+    if (room.game_type === "gomoku" && (pendingGomokuMoves.length || gomokuDragCommitTimer)) return;
     if (room.game_type === "xiangqi") await moveXiangqi(event);
     else if (room.game_type === "tictactoe") await moveTicTacToe(event);
     else await moveGomoku(event);
@@ -1439,17 +1604,146 @@
     }
   }
 
-  async function moveGomoku(event) {
-    if (room.game.turn !== room.game.human_color) return;
+  function gomokuPointFromClient(clientX, clientY) {
     const rect = board.getBoundingClientRect();
     const scale = board.width / rect.width;
-    const x = (event.clientX - rect.left) * scale;
-    const y = (event.clientY - rect.top) * scale;
+    const x = (clientX - rect.left) * scale;
+    const y = (clientY - rect.top) * scale;
     const margin = 48;
     const gap = (board.width - margin * 2) / 14;
-    const column = Math.round((x - margin) / gap);
-    const row = Math.round((y - margin) / gap);
-    if (row < 0 || row > 14 || column < 0 || column > 14) return;
+    return {
+      row: Math.round((y - margin) / gap),
+      column: Math.round((x - margin) / gap),
+    };
+  }
+
+  function gomokuPointIsValid(point) {
+    return point.row >= 0 && point.row <= 14 && point.column >= 0 && point.column <= 14;
+  }
+
+  function gomokuColorForToken(token) {
+    return token === "bot" ? Number(room?.game?.bot_color || 2) : Number(room?.game?.human_color || 1);
+  }
+
+  function queueGomokuDrag(point, color) {
+    if (!gomokuPointIsValid(point) || room?.game?.board?.[point.row]?.[point.column]) {
+      showToast("把棋子放在空的交叉点上");
+      return;
+    }
+    if (pendingGomokuMoves.some((move) => move.row === point.row && move.column === point.column)) {
+      showToast("这两枚棋子不能落在同一个位置");
+      return;
+    }
+    pendingGomokuMoves.push({ ...point, color });
+    render();
+    window.clearTimeout(gomokuDragCommitTimer);
+    if (pendingGomokuMoves.length >= 2) {
+      submitGomokuDrag();
+    } else {
+      gomokuDragCommitTimer = window.setTimeout(() => {
+        gomokuDragCommitTimer = 0;
+        submitGomokuDrag();
+      }, 240);
+    }
+  }
+
+  async function submitGomokuDrag() {
+    if (busy || !pendingGomokuMoves.length || !room?.game) return;
+    const moves = pendingGomokuMoves.slice(0, 2);
+    pendingGomokuMoves = moves;
+    busy = true;
+    render();
+    const first = moves[0];
+    const second = moves[1];
+    const interaction = room.game.turn === room.game.bot_color
+      ? "drag_assist"
+      : (second ? "drag_pair" : "drag");
+    try {
+      const data = await request("POST", "move", {
+        visitor_token: visitorToken,
+        row: first.row,
+        column: first.column,
+        color: first.color,
+        interaction,
+        pair_row: second?.row ?? -1,
+        pair_column: second?.column ?? -1,
+        pair_color: second?.color ?? 0,
+      });
+      pendingGomokuMoves = [];
+      setRoom(data.room);
+      render();
+      const settledMoves = [first];
+      const lastMove = data.room?.game?.last_move;
+      if (Array.isArray(lastMove) && (lastMove[0] !== first.row || lastMove[1] !== first.column)) {
+        settledMoves.push({ row: lastMove[0], column: lastMove[1], color: data.room.game.board?.[lastMove[0]]?.[lastMove[1]] });
+      }
+      animateGomokuDrops(second ? moves : settledMoves);
+    } catch (error) {
+      pendingGomokuMoves = [];
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "这枚棋子暂时放不上去");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  function beginGomokuDrag(event) {
+    if (
+      busy
+      || room?.game_type !== "gomoku"
+      || !room?.is_player
+      || room.status !== "active"
+      || !room.game
+    ) return;
+    event.preventDefault();
+    const colorToken = event.currentTarget.dataset.pieceColor || "human";
+    gomokuDrag = {
+      pointerId: event.pointerId,
+      color: gomokuColorForToken(colorToken),
+      ghost: document.createElement("span"),
+    };
+    gomokuDrag.ghost.className = `gomoku-drag-ghost ${colorToken === "bot" ? (room.game.bot_color === 1 ? "black" : "white") : (room.game.human_color === 1 ? "black" : "white")}`;
+    document.body.appendChild(gomokuDrag.ghost);
+    updateGomokuDrag(event.clientX, event.clientY);
+    window.addEventListener("pointermove", updateGomokuDrag, { passive: false });
+    window.addEventListener("pointerup", finishGomokuDrag, { once: true });
+    window.addEventListener("pointercancel", cancelGomokuDrag, { once: true });
+  }
+
+  function updateGomokuDrag(event) {
+    if (!gomokuDrag) return;
+    event.preventDefault?.();
+    gomokuDrag.ghost.style.left = `${event.clientX}px`;
+    gomokuDrag.ghost.style.top = `${event.clientY}px`;
+  }
+
+  function clearGomokuDragListeners() {
+    window.removeEventListener("pointermove", updateGomokuDrag);
+    window.removeEventListener("pointerup", finishGomokuDrag);
+    window.removeEventListener("pointercancel", cancelGomokuDrag);
+    gomokuDrag?.ghost?.remove();
+  }
+
+  function cancelGomokuDrag() {
+    clearGomokuDragListeners();
+    gomokuDrag = null;
+  }
+
+  function finishGomokuDrag(event) {
+    if (!gomokuDrag) return;
+    const drag = gomokuDrag;
+    clearGomokuDragListeners();
+    gomokuDrag = null;
+    const point = gomokuPointFromClient(event.clientX, event.clientY);
+    if (gomokuPointIsValid(point)) queueGomokuDrag(point, drag.color);
+    else showToast("把棋子拖到棋盘交叉点上");
+  }
+
+  async function moveGomoku(event) {
+    if (room.game.turn !== room.game.human_color) return;
+    const { row, column } = gomokuPointFromClient(event.clientX, event.clientY);
+    if (!gomokuPointIsValid({ row, column })) return;
     if (room.game.board?.[row]?.[column]) {
       showToast("这个位置已经有棋子了");
       return;
@@ -1462,6 +1756,12 @@
       pendingMove = null;
       setRoom(data.room);
       render();
+      const botMove = data.room?.game?.last_move;
+      const settledMoves = [{ row, column, color: room.game.human_color }];
+      if (Array.isArray(botMove) && (botMove[0] !== row || botMove[1] !== column)) {
+        settledMoves.push({ row: botMove[0], column: botMove[1], color: data.room.game.board?.[botMove[0]]?.[botMove[1]] });
+      }
+      animateGomokuDrops(settledMoves);
     } catch (error) {
       pendingMove = null;
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
@@ -1470,6 +1770,74 @@
       busy = false;
       render();
     }
+  }
+
+  function beginBoardLongPress(event) {
+    if (room?.game_type === "xiangqi") {
+      beginXiangqiDrag(event);
+      return;
+    }
+    if (
+      room?.game_type !== "gomoku"
+      || busy
+      || !room?.is_player
+      || room.status !== "active"
+      || !room.game
+    ) return;
+    const point = gomokuPointFromClient(event.clientX, event.clientY);
+    if (!gomokuPointIsValid(point) || room.game.board?.[point.row]?.[point.column]) return;
+    window.clearTimeout(boardLongPressTimer);
+    boardLongPressTimer = window.setTimeout(() => {
+      boardLongPressTimer = 0;
+      if (busy || room.game.board?.[point.row]?.[point.column]) return;
+      suppressNextBoardClick = true;
+      pulse(boardStage, "board-long-press", 520);
+      queueGomokuDrag(point, gomokuColorForToken("bot"));
+    }, 520);
+  }
+
+  function cancelBoardLongPress() {
+    window.clearTimeout(boardLongPressTimer);
+    boardLongPressTimer = 0;
+  }
+
+  function xiangqiPointFromClient(clientX, clientY) {
+    const rect = board.getBoundingClientRect();
+    const scaleX = board.width / rect.width;
+    const scaleY = board.height / rect.height;
+    const marginX = 54;
+    const marginY = 48;
+    const gapX = (board.width - marginX * 2) / 8;
+    const gapY = (board.height - marginY * 2) / 9;
+    const displayColumn = Math.round(((clientX - rect.left) * scaleX - marginX) / gapX);
+    const displayRow = Math.round(((clientY - rect.top) * scaleY - marginY) / gapY);
+    if (displayRow < 0 || displayRow > 9 || displayColumn < 0 || displayColumn > 8) return null;
+    const [row, column] = modelPoint(displayRow, displayColumn);
+    return { row, column, displayRow, displayColumn };
+  }
+
+  function beginXiangqiDrag(event) {
+    if (busy || !room?.is_player || room.status !== "active" || !room.game) return;
+    if (room.game.turn !== room.game.human_side) return;
+    const point = xiangqiPointFromClient(event.clientX, event.clientY);
+    if (!point) return;
+    const legal = Array.isArray(room.game.legal_moves) ? room.game.legal_moves : [];
+    if (!legal.some((move) => move[0] === point.row && move[1] === point.column)) return;
+    xiangqiDragStart = { x: event.clientX, y: event.clientY, point };
+    selectedPiece = [point.row, point.column];
+    drawBoard();
+  }
+
+  function finishXiangqiDrag(event) {
+    if (!xiangqiDragStart) return;
+    const start = xiangqiDragStart;
+    xiangqiDragStart = null;
+    const distance = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+    if (distance < 8) return;
+    const target = xiangqiPointFromClient(event.clientX, event.clientY);
+    if (!target) return;
+    suppressNextBoardClick = true;
+    moveXiangqi(event);
   }
 
   async function moveXiangqi(event) {
@@ -1553,6 +1921,26 @@
   document.getElementById("diceHoldAction").addEventListener("click", () => diceAction("hold"));
   document.getElementById("blackjackHitAction").addEventListener("click", () => blackjackAction("hit"));
   document.getElementById("blackjackStandAction").addEventListener("click", () => blackjackAction("stand"));
+  [
+    [document.getElementById("blackjackHitAction"), "hit"],
+    [document.getElementById("blackjackStandAction"), "stand"],
+  ].forEach(([target, action]) => {
+    target.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      target.classList.add("drop-ready");
+    });
+    target.addEventListener("dragleave", () => target.classList.remove("drop-ready"));
+    target.addEventListener("drop", (event) => {
+      event.preventDefault();
+      target.classList.remove("drop-ready");
+      if (event.dataTransfer?.getData("application/x-game-action") === "hit") blackjackAction(action);
+    });
+  });
+  const diceRollAction = document.getElementById("diceRollAction");
+  diceRollAction.addEventListener("pointerdown", () => diceRollAction.classList.add("is-pressed"));
+  ["pointerup", "pointercancel", "pointerleave"].forEach((name) => {
+    diceRollAction.addEventListener(name, () => diceRollAction.classList.remove("is-pressed"));
+  });
   drawCanvas.addEventListener("pointerdown", beginDrawing);
   drawCanvas.addEventListener("pointermove", continueDrawing);
   drawCanvas.addEventListener("pointerup", finishDrawing);
@@ -1561,6 +1949,16 @@
   document.getElementById("drawClear").addEventListener("click", () => changeDrawing([]));
   document.getElementById("drawGuessAction").addEventListener("click", guessDrawing);
   board.addEventListener("click", moveAt);
+  board.addEventListener("pointerdown", beginBoardLongPress);
+  board.addEventListener("pointerup", cancelBoardLongPress);
+  board.addEventListener("pointerup", finishXiangqiDrag);
+  board.addEventListener("pointercancel", cancelBoardLongPress);
+  board.addEventListener("pointercancel", () => { xiangqiDragStart = null; });
+  board.addEventListener("pointerleave", cancelBoardLongPress);
+  document.querySelectorAll(".tray-piece").forEach((piece) => {
+    piece.addEventListener("pointerdown", beginGomokuDrag);
+    piece.addEventListener("dragstart", (event) => event.preventDefault());
+  });
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) notifyLeave();
   });

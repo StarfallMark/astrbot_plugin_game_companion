@@ -9,6 +9,7 @@ import random
 import re
 import shutil
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -279,9 +280,21 @@ class PikafishService:
             raise RuntimeError(f"Pikafish 神经网络文件不存在：{network}")
         self.error = ""
         self._lines = asyncio.Queue()
+        command = [str(binary)]
+        # Development and CI fixtures sometimes provide a POSIX-style Python
+        # UCI script without a .exe suffix. Windows cannot launch that file
+        # directly, so use the active interpreter when its shebang identifies
+        # Python while leaving real engine binaries untouched.
+        if os.name == "nt":
+            try:
+                header = binary.read_bytes()[:128]
+            except OSError:
+                header = b""
+            if header.startswith(b"#!") and b"python" in header.lower():
+                command = [sys.executable, str(binary)]
         try:
             self._process = await asyncio.create_subprocess_exec(
-                str(binary),
+                *command,
                 cwd=str(binary.parent),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,

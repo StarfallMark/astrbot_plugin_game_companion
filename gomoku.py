@@ -78,6 +78,42 @@ class GomokuGame:
             return
         self.turn = WHITE if color == BLACK else BLACK
 
+    def place_for_fun(
+        self,
+        row: int,
+        column: int,
+        color: int,
+        *,
+        next_turn: int | None = None,
+    ) -> None:
+        """Place a dragged stone while keeping the playful interaction path.
+
+        This is deliberately separate from ``place``: ordinary clicks keep
+        strict turn validation, while the WebUI drag gesture may borrow a
+        colour or let a player briefly help the Bot.
+        """
+        if self.finished:
+            raise ValueError("对局已经结束")
+        if color not in {BLACK, WHITE}:
+            raise ValueError("棋子颜色无效")
+        if not (0 <= row < BOARD_SIZE and 0 <= column < BOARD_SIZE):
+            raise ValueError("落子位置超出棋盘")
+        if self.board[row][column] != EMPTY:
+            raise ValueError("这个位置已经有棋子")
+        self.board[row][column] = color
+        self.history.append((row, column, color))
+        if self._is_win(row, column, color):
+            self.winner = color
+            return
+        if len(self.history) == BOARD_SIZE * BOARD_SIZE:
+            self.draw = True
+            return
+        self.turn = (
+            next_turn
+            if next_turn in {BLACK, WHITE}
+            else (WHITE if color == BLACK else BLACK)
+        )
+
     def choose_bot_move(
         self, *, seed: int | None = None, time_limit: float = 0.45
     ) -> tuple[int, int]:

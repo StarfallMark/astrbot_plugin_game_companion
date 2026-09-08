@@ -122,6 +122,20 @@ def test_player_move_is_rendered_before_waiting_for_bot_response() -> None:
     assert "pendingMove = null;" in script[move_request:]
 
 
+def test_gomoku_piece_tray_supports_drag_pair_and_drop_animation() -> None:
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    style = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    assert 'id="gomokuTray"' in page
+    assert 'data-piece-color="bot"' in page
+    assert "submitGomokuDrag" in script
+    assert 'interaction = room.game.turn === room.game.bot_color' in script
+    assert 'interaction,\n        pair_row' in script
+    assert "gomokuDropAnimations" in script
+    assert ".gomoku-drag-ghost" in style
+
+
 def test_xiangqi_webui_uses_server_legal_moves_without_game_switcher() -> None:
     script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
@@ -284,6 +298,12 @@ def test_tictactoe_is_available_to_natural_language_tools() -> None:
     assert '"井字棋": "tictactoe"' in source
     assert '"圈叉棋": "tictactoe"' in source
     assert '"tictactoe": "井字棋"' in source
+
+
+def test_blackjack_is_listed_in_room_tool_contract() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、turtle_soup、pig_dice、draw_guess 或 blackjack。" in source
 
 
 def test_room_link_is_delivered_outside_model_rewrite_with_fallback() -> None:

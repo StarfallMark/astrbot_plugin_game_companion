@@ -45,6 +45,24 @@
         </div>
       </div>
 
+      <section id="gomokuTray" class="piece-tray" hidden aria-label="五子棋棋盒">
+        <div class="piece-tray-head">
+          <div>
+            <span class="label">棋盒</span>
+            <strong>挑一枚，放到棋盘上</strong>
+          </div>
+          <span id="gomokuTrayHint" class="piece-tray-hint">拖动会有额外互动</span>
+        </div>
+        <div class="piece-tray-items">
+          <button id="gomokuHumanPiece" class="tray-piece black" type="button" draggable="true" data-piece-color="human" aria-label="拖动玩家棋子">
+            <span class="tray-stone" aria-hidden="true"></span><span>玩家棋子</span>
+          </button>
+          <button id="gomokuBotPiece" class="tray-piece white" type="button" draggable="true" data-piece-color="bot" aria-label="拖动 Bot 棋子">
+            <span class="tray-stone" aria-hidden="true"></span><span>Bot 棋子</span>
+          </button>
+        </div>
+      </section>
+
       <section id="soupStage" class="soup-stage" hidden aria-label="海龟汤">
         <header class="soup-header">
           <div>
