@@ -21,6 +21,9 @@ from .models import (
     TurtleSoupMode,
     Visitor,
 )
+from .othello import BLACK as OTHELLO_BLACK
+from .othello import WHITE as OTHELLO_WHITE
+from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
@@ -44,6 +47,7 @@ SUPPORTED_GAMES: tuple[GameType, ...] = (
     "gomoku",
     "xiangqi",
     "tictactoe",
+    "othello",
     "turtle_soup",
     "pig_dice",
     "draw_guess",
@@ -657,6 +661,21 @@ class RoomManager:
                     human_mark=human_mark, difficulty=room.difficulty
                 )
                 side_label = "X" if human_mark == TICTACTOE_X else "O"
+            elif room.game_type == "othello":
+                normalized_side = str(side or "human_black").strip().lower()
+                if normalized_side not in {"human_black", "bot_black", "random"}:
+                    normalized_side = "human_black"
+                if normalized_side == "random":
+                    normalized_side = secrets.choice(("human_black", "bot_black"))
+                human_color = (
+                    OTHELLO_BLACK
+                    if normalized_side == "human_black"
+                    else OTHELLO_WHITE
+                )
+                room.game = OthelloGame(
+                    human_color=human_color, difficulty=room.difficulty
+                )
+                side_label = "黑" if human_color == OTHELLO_BLACK else "白"
             elif room.game_type == "pig_dice":
                 room.game = PigDiceGame(
                     difficulty=room.difficulty,
@@ -784,6 +803,23 @@ class RoomManager:
                     column=int(column),
                     color=room.game.human_mark,
                 )
+            elif isinstance(room.game, OthelloGame):
+                room.game.place(int(row), int(column), room.game.human_color)
+                board_event.update(
+                    row=int(row),
+                    column=int(column),
+                    color=room.game.human_color,
+                    passed_color=room.game.last_passed,
+                )
+                if room.game.last_passed:
+                    passed = (
+                        "黑"
+                        if room.game.last_passed == OTHELLO_BLACK
+                        else "白"
+                    )
+                    room.add_message(
+                        "system", f"{passed}方没有合法落子，本回合跳过。"
+                    )
             else:
                 raise ValueError("当前游戏不支持棋盘落子")
             room.touch()
@@ -792,7 +828,8 @@ class RoomManager:
         if finished:
             await self._finish_game(room)
             return
-        await self._bot_turn(room)
+        if self._is_bot_turn(room):
+            await self._bot_turn(room)
 
     async def player_dice_action(
         self, room: GameRoom, visitor_token: str, action: str
@@ -1131,6 +1168,12 @@ class RoomManager:
                 human_mark = room.game.human_mark
                 room.game = TicTacToeGame(human_mark=human_mark, difficulty=difficulty)
                 side_label = "X" if human_mark == TICTACTOE_X else "O"
+            elif isinstance(room.game, OthelloGame):
+                human_color = room.game.human_color
+                room.game = OthelloGame(
+                    human_color=human_color, difficulty=difficulty
+                )
+                side_label = "黑" if human_color == OTHELLO_BLACK else "白"
             elif isinstance(room.game, PigDiceGame):
                 room.game = PigDiceGame(
                     difficulty=difficulty,
@@ -1255,6 +1298,8 @@ class RoomManager:
                 room.game.winner = room.game.bot_color
             elif isinstance(room.game, TicTacToeGame):
                 room.game.winner = room.game.bot_mark
+            elif isinstance(room.game, OthelloGame):
+                room.game.winner = room.game.bot_color
             elif isinstance(room.game, PigDiceGame):
                 room.game.resign_human()
             elif isinstance(room.game, DrawGuessGame):
@@ -1863,43 +1908,69 @@ class RoomManager:
             await self.destroy(room_id, reason)
 
     async def _bot_turn(self, room: GameRoom) -> None:
-        await asyncio.sleep(
-            {"easy": 0.55, "normal": 0.85, "hard": 1.05}[room.difficulty]
-        )
-        if isinstance(room.game, PigDiceGame):
-            await self._pig_dice_bot_turn(room)
-            return
-        board_event: dict[str, object] = {"actor": "bot"}
-        async with room.lock:
-            if room.status != "active" or room.game is None or room.game.finished:
+        while True:
+            await asyncio.sleep(
+                {"easy": 0.55, "normal": 0.85, "hard": 1.05}[room.difficulty]
+            )
+            if isinstance(room.game, PigDiceGame):
+                await self._pig_dice_bot_turn(room)
                 return
-            game = room.game
-            if isinstance(game, (TurtleSoupGame, DrawGuessGame)):
-                return
-            if isinstance(game, XiangqiGame):
-                try:
-                    await game.place_bot(self._require_xiangqi_engine())
-                except Exception:
-                    room.status = "paused"
-                    room.add_message(
-                        "system",
-                        "象棋引擎暂时不可用，对局已暂停。恢复引擎后可在 QQ 或管理台继续。",
+            board_event: dict[str, object] = {"actor": "bot"}
+            async with room.lock:
+                if room.status != "active" or room.game is None or room.game.finished:
+                    return
+                game = room.game
+                if isinstance(game, (TurtleSoupGame, DrawGuessGame)):
+                    return
+                if isinstance(game, XiangqiGame):
+                    try:
+                        await game.place_bot(self._require_xiangqi_engine())
+                    except Exception:
+                        room.status = "paused"
+                        room.add_message(
+                            "system",
+                            "象棋引擎暂时不可用，对局已暂停。恢复引擎后可在 QQ 或管理台继续。",
+                        )
+                        raise
+                elif isinstance(game, GomokuGame):
+                    move = await asyncio.to_thread(game.choose_bot_move)
+                    game.place(move[0], move[1], game.bot_color)
+                    board_event.update(
+                        row=move[0], column=move[1], color=game.bot_color
                     )
-                    raise
-            elif isinstance(game, GomokuGame):
-                move = await asyncio.to_thread(game.choose_bot_move)
-                game.place(move[0], move[1], game.bot_color)
-                board_event.update(
-                    row=move[0], column=move[1], color=game.bot_color
-                )
-            else:
-                move = game.choose_bot_move()
-                game.place(move[0], move[1], game.bot_mark)
-                board_event.update(row=move[0], column=move[1], color=game.bot_mark)
-            finished = game.finished
-        await self._emit("board_changed", room, board_event)
-        if finished:
-            await self._finish_game(room)
+                elif isinstance(game, OthelloGame):
+                    move = await asyncio.to_thread(game.choose_bot_move)
+                    game.place(move[0], move[1], game.bot_color)
+                    board_event.update(
+                        row=move[0],
+                        column=move[1],
+                        color=game.bot_color,
+                        passed_color=game.last_passed,
+                    )
+                    if game.last_passed:
+                        passed = (
+                            "黑"
+                            if game.last_passed == OTHELLO_BLACK
+                            else "白"
+                        )
+                        room.add_message(
+                            "system", f"{passed}方没有合法落子，本回合跳过。"
+                        )
+                else:
+                    move = game.choose_bot_move()
+                    game.place(move[0], move[1], game.bot_mark)
+                    board_event.update(
+                        row=move[0], column=move[1], color=game.bot_mark
+                    )
+                finished = game.finished
+            await self._emit("board_changed", room, board_event)
+            if finished:
+                await self._finish_game(room)
+                return
+            # Othello permits a pass. If the human has no legal move, the Bot
+            # keeps playing instead of leaving the room waiting on an impossible move.
+            if not isinstance(room.game, OthelloGame) or not self._is_bot_turn(room):
+                return
 
     async def _pig_dice_bot_turn(self, room: GameRoom) -> None:
         """Play a visible multi-roll Bot turn without invoking the language model."""
@@ -2378,6 +2449,7 @@ class RoomManager:
     @staticmethod
     def _game_is_bot_turn(
         game: GomokuGame
+        | OthelloGame
         | XiangqiGame
         | TicTacToeGame
         | PigDiceGame
@@ -2391,12 +2463,15 @@ class RoomManager:
             return game.turn == game.bot_side
         if isinstance(game, GomokuGame):
             return game.turn == game.bot_color
+        if isinstance(game, OthelloGame):
+            return game.turn == game.bot_color
         return game.turn == game.bot_mark
 
     @staticmethod
     def _game_human_won(
         game: (
             GomokuGame
+            | OthelloGame
             | XiangqiGame
             | TicTacToeGame
             | TurtleSoupGame
@@ -2414,6 +2489,8 @@ class RoomManager:
             return game.winner == game.human_side
         if isinstance(game, GomokuGame):
             return game.winner == game.human_color
+        if isinstance(game, OthelloGame):
+            return game.winner == game.human_color
         return game.winner == game.human_mark
 
     @staticmethod
@@ -2422,6 +2499,7 @@ class RoomManager:
             "gomoku": "五子棋",
             "xiangqi": "中国象棋",
             "tictactoe": "井字棋",
+            "othello": "黑白棋",
             "turtle_soup": "海龟汤",
             "pig_dice": "贪心骰子",
             "draw_guess": "你画我猜",

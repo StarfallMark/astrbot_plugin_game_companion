@@ -343,6 +343,40 @@ async def test_tictactoe_move_endpoint_accepts_cell_coordinates() -> None:
     assert response.status == 200
     game = payload["data"]["room"]["game"]
     assert game["board"][1][1] == 1
+
+
+@pytest.mark.asyncio
+async def test_othello_move_endpoint_returns_flips_and_next_legal_moves() -> None:
+    server = make_server(0)
+    room = await server.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="othello",
+        difficulty="easy",
+    )
+    visitor = await server.manager.join(room)
+    await server.manager.claim_and_start(room, visitor.token, "human_black")
+
+    async with TestClient(TestServer(server._build_app())) as client:
+        response = await client.post(
+            f"/api/room/{room.access_token}/move",
+            json={"visitor_token": visitor.token, "row": 2, "column": 3},
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    game = payload["data"]["room"]["game"]
+    assert game["board"][2][3] == 1
+    assert game["board"][3][3] == 1
+    assert game["turn"] == 1
+    assert game["black_count"] + game["white_count"] == 6
+    assert game["legal_moves"]
     assert game["move_count"] == 2
 
 

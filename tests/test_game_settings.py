@@ -33,6 +33,7 @@ def test_settings_snapshot_contains_every_game_and_editable_values() -> None:
         "gomoku",
         "xiangqi",
         "tictactoe",
+        "othello",
         "turtle_soup",
         "pig_dice",
         "draw_guess",
@@ -56,6 +57,7 @@ async def test_validated_settings_persist_and_apply_without_reloading_plugin() -
         {
             "games": {
                 "gomoku": {"enabled": False},
+                "othello": {"enabled": False},
                 "pig_dice": {"enabled": True, "target_score": 80},
                 "draw_guess": {
                     "enabled": True,
@@ -73,6 +75,8 @@ async def test_validated_settings_persist_and_apply_without_reloading_plugin() -
 
     assert plugin.config["gomoku"]["enabled"] is False
     assert plugin.manager.game_enabled("gomoku") is False
+    assert plugin.config["othello"]["enabled"] is False
+    assert plugin.manager.game_enabled("othello") is False
     assert plugin.manager.pig_dice_target_score == 80
     assert plugin.manager.draw_guess_duration_seconds == 180
     assert plugin.manager.draw_guess_max_guesses == 7

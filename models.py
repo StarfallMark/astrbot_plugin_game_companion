@@ -9,6 +9,7 @@ from typing import Literal
 from .blackjack import BlackjackGame
 from .draw_guess import DrawGuessGame
 from .gomoku import Difficulty, GomokuGame
+from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .tictactoe import TicTacToeGame
 from .turtle_soup import TurtleSoupGame
@@ -16,8 +17,8 @@ from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
 GameType = Literal[
-    "gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice", "draw_guess",
-    "blackjack",
+    "gomoku", "xiangqi", "tictactoe", "othello", "turtle_soup", "pig_dice",
+    "draw_guess", "blackjack",
 ]
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
@@ -181,6 +182,7 @@ class GameRoom:
     multiplayer: MultiplayerState = field(default_factory=MultiplayerState)
     game: (
         GomokuGame
+        | OthelloGame
         | XiangqiGame
         | TicTacToeGame
         | TurtleSoupGame
@@ -194,6 +196,7 @@ class GameRoom:
             "gomoku": GameScore(),
             "xiangqi": GameScore(),
             "tictactoe": GameScore(),
+            "othello": GameScore(),
             "turtle_soup": GameScore(),
             "pig_dice": GameScore(),
             "draw_guess": GameScore(),

@@ -10,6 +10,7 @@
     ["gomoku", "五子棋"],
     ["xiangqi", "中国象棋"],
     ["tictactoe", "井字棋"],
+    ["othello", "黑白棋"],
     ["turtle_soup", "海龟汤"],
     ["pig_dice", "贪心骰子"],
     ["draw_guess", "你画我猜"],

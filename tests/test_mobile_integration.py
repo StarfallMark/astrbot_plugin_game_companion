@@ -3,7 +3,6 @@ from __future__ import annotations
 import types
 
 import pytest
-
 from astrbot_plugin_game_companion.main import GameCompanionPlugin
 from astrbot_plugin_game_companion.room_manager import RoomManager
 
@@ -141,7 +140,19 @@ def test_mobile_status_allows_a_non_loopback_listener_without_cloudflare() -> No
     plugin.auto_quick_tunnel = False
     plugin.room_server = types.SimpleNamespace(running=False)
     plugin.quick_tunnel = types.SimpleNamespace(ready=False)
-    plugin.enabled_games = {game: True for game in ("gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice", "draw_guess", "blackjack")}
+    plugin.enabled_games = {
+        game: True
+        for game in (
+            "gomoku",
+            "xiangqi",
+            "tictactoe",
+            "othello",
+            "turtle_soup",
+            "pig_dice",
+            "draw_guess",
+            "blackjack",
+        )
+    }
 
     status = plugin.mobile_status()
 

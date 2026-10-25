@@ -261,6 +261,17 @@
       }
     }
   },
+  "othello": {
+    "description": "黑白棋",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用黑白棋",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
   "turtle_soup": {
     "description": "海龟汤",
     "type": "object",

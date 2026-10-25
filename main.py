@@ -27,6 +27,9 @@ from .draw_guess import DrawGuessGame
 from .gomoku import BLACK as GOMOKU_BLACK
 from .gomoku import Difficulty, GomokuGame
 from .models import GameRoom, GameType, TurtleSoupMode, Visitor
+from .othello import BLACK as OTHELLO_BLACK
+from .othello import WHITE as OTHELLO_WHITE
+from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
 from .room_manager import SUPPORTED_GAMES, RoomManager
@@ -62,7 +65,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.2.8"
+PLUGIN_VERSION = "0.2.9"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -99,6 +102,12 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
         "game_type": "tictactoe",
         "label": "井字棋",
         "description": "3×3 棋盘，由 Bot 人格决定三档棋力。",
+        "fields": (),
+    },
+    {
+        "game_type": "othello",
+        "label": "黑白棋",
+        "description": "8×8 棋盘，合法落子会夹住并翻转对方棋子。",
         "fields": (),
     },
     {
@@ -658,7 +667,7 @@ class GameCompanionPlugin(Star):
         """仅在用户明确想和 Bot 玩游戏时创建可视化游戏房间。
 
         难度必须由你结合当前人格、关系和用户请求自行决定，不能把难度选择交给网页用户。
-        支持 gomoku（五子棋）、xiangqi（中国象棋）、tictactoe（井字棋）、
+        支持 gomoku（五子棋）、xiangqi（中国象棋）、tictactoe（井字棋）、othello（黑白棋）、
         turtle_soup（海龟汤）、pig_dice（贪心骰子）、draw_guess（你画我猜）
         和 blackjack（二十一点，Bot 当庄家）。
         不要因为普通聊天中偶然提到游戏名称就调用本工具。
@@ -666,7 +675,7 @@ class GameCompanionPlugin(Star):
         全部由用户进入 WebUI 后完成，不能在 QQ 中代替用户执行。
 
         Args:
-            game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、turtle_soup、pig_dice 或 draw_guess。
+            game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、othello、turtle_soup、pig_dice、draw_guess 或 blackjack。
             difficulty(string): 你决定使用的难度，只能是 easy、normal、hard；贪心骰子中分别表示稳健、均衡和大胆，二十一点中影响庄家软 17 规则。
             turtle_soup_mode(string): 海龟汤玩法；bot_host 表示 Bot 出题玩家猜，player_host 表示玩家给线索 Bot 猜。非海龟汤时忽略。
             admin_room(boolean): 仅当群聊中的游戏管理员明确要求创建管理员房间时传 true。普通群聊房间必须传 false；非游戏管理员不能创建管理员房间。
@@ -801,6 +810,7 @@ class GameCompanionPlugin(Star):
             "gomoku": "15×15 连成五子",
             "xiangqi": "使用 Pikafish 引擎",
             "tictactoe": "三连即可获胜",
+            "othello": "8×8 棋盘，夹住对方棋子即可翻转；双方无合法步时棋子较多者获胜",
             "turtle_soup": "通过是非提问还原汤底",
             "pig_dice": f"继续掷或收手，先到 {self.manager.pig_dice_target_score} 分获胜",
             "draw_guess": "用户在网页作画，Bot 通过视觉模型猜词",
@@ -983,6 +993,19 @@ class GameCompanionPlugin(Star):
                 f"玩家执 {human}，Bot 执 {bot}，X 固定先手；已落子 {len(game.history)} 手"
                 + ("。" if game.finished else f"，当前轮到{turn}。")
             )
+        elif isinstance(game, OthelloGame):
+            human = "黑" if game.human_color == OTHELLO_BLACK else "白"
+            bot = "黑" if game.bot_color == OTHELLO_BLACK else "白"
+            turn = "玩家" if game.turn == game.human_color else "Bot"
+            passed = (
+                "；上一手后对方无合法落子，已跳过"
+                if game.last_passed
+                else ""
+            )
+            detail = (
+                f"玩家执{human}、Bot 执{bot}；黑方先行，黑 {game.black_count} 子、"
+                f"白 {game.white_count} 子，当前轮到{turn}{passed}。"
+            )
         elif isinstance(game, XiangqiGame):
             human = "红" if game.human_side == XIANGQI_RED else "黑"
             bot = "红" if game.bot_side == XIANGQI_RED else "黑"
@@ -1103,6 +1126,19 @@ class GameCompanionPlugin(Star):
             turn = "X" if game.turn == TICTACTOE_X else "O"
             lines.append(
                 f"实时棋盘={board}；玩家执 {human_mark}，Bot 执 {bot_mark}，当前轮到 {turn}。"
+            )
+            return lines
+
+        if isinstance(game, OthelloGame):
+            symbols = {0: ".", OTHELLO_BLACK: "B", OTHELLO_WHITE: "W"}
+            board = "/".join("".join(symbols[cell] for cell in row) for row in game.board)
+            human = "黑" if game.human_color == OTHELLO_BLACK else "白"
+            bot = "黑" if game.bot_color == OTHELLO_BLACK else "白"
+            turn = "玩家" if game.turn == game.human_color else "Bot"
+            lines.append(
+                f"实时棋盘={board}；玩家执{human}，Bot 执{bot}；黑 {game.black_count} 子、"
+                f"白 {game.white_count} 子；当前轮到{turn}；当前可落子点数 {len(game.legal_moves())}。"
+                "黑白棋落子需夹住对方棋子，不能只按当前棋子数量判断胜负。"
             )
             return lines
 
@@ -1455,6 +1491,17 @@ class GameCompanionPlugin(Star):
                 tactical_prompt = {
                     "fork": "井字棋盘面刚出现了双重威胁",
                 }.get(tactical)
+            elif room.game_type == "othello":
+                side = (
+                    room.game.human_color
+                    if payload.get("actor") == "human"
+                    else room.game.bot_color
+                )
+                tactical = room.game.tactical_state(side)
+                tactical_prompt = {
+                    "major_capture": "黑白棋刚发生了一次较大的翻子",
+                    "win": "黑白棋刚结束一局",
+                }.get(tactical)
             else:
                 side = None
                 tactical = room.game.tactical_state(side)
@@ -1583,6 +1630,15 @@ class GameCompanionPlugin(Star):
             bot = "X" if game.bot_mark == TICTACTOE_X else "O"
             first = "玩家" if game.human_mark == TICTACTOE_X else "Bot"
             facts = f"玩家执 {human}，Bot 执 {bot}；井字棋固定由 X 先手，因此本局由{first}先行。"
+        elif isinstance(game, OthelloGame):
+            human = "黑" if game.human_color == OTHELLO_BLACK else "白"
+            bot = "黑" if game.bot_color == OTHELLO_BLACK else "白"
+            first = "玩家" if game.human_color == OTHELLO_BLACK else "Bot"
+            facts = (
+                f"玩家执{human}，Bot 执{bot}；黑白棋固定由黑方先行，因此本局由{first}先行。"
+                "双方每步需夹住并翻转至少一枚对方棋子，无合法步时自动跳过；"
+                "棋盘填满或双方都无合法步时，棋子较多者获胜。"
+            )
         elif isinstance(game, PigDiceGame):
             first = "玩家" if game.turn == "human" else "Bot"
             facts = f"本局随机先手结果已经确定，由{first}先掷，目标是先得到 {game.target_score} 分。"
@@ -1658,6 +1714,13 @@ class GameCompanionPlugin(Star):
             human = "X" if game.human_mark == TICTACTOE_X else "O"
             bot = "X" if game.bot_mark == TICTACTOE_X else "O"
             side = f"本局玩家执 {human}、Bot 执 {bot}；"
+        elif isinstance(game, OthelloGame):
+            human = "黑" if game.human_color == OTHELLO_BLACK else "白"
+            bot = "黑" if game.bot_color == OTHELLO_BLACK else "白"
+            side = (
+                f"本局玩家执{human}、Bot 执{bot}；终局黑 {game.black_count} 子、"
+                f"白 {game.white_count} 子；"
+            )
         elif isinstance(game, BlackjackGame):
             side = f"本局 Bot 担任庄家、{len(game.hands)} 位闲家各自对庄；"
         return (
@@ -1922,6 +1985,7 @@ class GameCompanionPlugin(Star):
         aliases: tuple[tuple[GameType, tuple[str, ...]], ...] = (
             ("turtle_soup", ("海龟汤",)),
             ("tictactoe", ("井字棋", "圈叉棋")),
+            ("othello", ("黑白棋", "奥赛罗", "奥赛罗棋", "黑白子")),
             ("xiangqi", ("中国象棋", "象棋")),
             ("gomoku", ("五子棋",)),
             ("pig_dice", ("贪心骰子", "小猪骰子", "骰子")),
@@ -3755,6 +3819,12 @@ class GameCompanionPlugin(Star):
             "tic_tac_toe": "tictactoe",
             "井字棋": "tictactoe",
             "圈叉棋": "tictactoe",
+            "othello": "othello",
+            "reversi": "othello",
+            "黑白棋": "othello",
+            "奥赛罗": "othello",
+            "奥赛罗棋": "othello",
+            "黑白子": "othello",
             "turtle_soup": "turtle_soup",
             "turtle-soup": "turtle_soup",
             "海龟汤": "turtle_soup",
@@ -3777,7 +3847,7 @@ class GameCompanionPlugin(Star):
             "黑杰克": "blackjack",
         }
         if normalized not in aliases:
-            raise ValueError("目前只支持五子棋、中国象棋、井字棋、海龟汤、贪心骰子、你画我猜和二十一点")
+            raise ValueError("目前只支持五子棋、中国象棋、井字棋、黑白棋、海龟汤、贪心骰子、你画我猜和二十一点")
         return aliases[normalized]  # type: ignore[return-value]
 
     @staticmethod
@@ -3786,6 +3856,7 @@ class GameCompanionPlugin(Star):
             "gomoku": "五子棋",
             "xiangqi": "中国象棋",
             "tictactoe": "井字棋",
+            "othello": "黑白棋",
             "turtle_soup": "海龟汤",
             "pig_dice": "贪心骰子",
             "draw_guess": "你画我猜",
